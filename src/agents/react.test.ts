@@ -1,0 +1,88 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { ChatOpenAI } from "@langchain/openai";
+import { ModelCallCounter } from "./metrics.js";
+import { createReactStrategy } from "./react.js";
+
+test("ReAct returns a typed ordered action/observation/answer trace", async () => {
+  let recursionLimit = 0;
+  const strategy = createReactStrategy({
+    tools: [],
+    modelFactory: () => new ChatOpenAI({ model: "test/model" }),
+    agentFactory: () => ({
+      invoke: async (_input, config) => {
+        recursionLimit = config?.recursionLimit ?? 0;
+        if (Array.isArray(config?.callbacks)) {
+          for (const callback of config.callbacks) {
+            if (callback instanceof ModelCallCounter) {
+              callback.recordInvocation("model-call-1");
+              callback.recordInvocation("model-call-1");
+              callback.recordInvocation("model-call-retry");
+            }
+          }
+        }
+        return {
+          messages: [
+            new HumanMessage("List alerts"),
+            new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  id: "call-1",
+                  name: "list_alerts",
+                  args: { status: "firing" },
+                  type: "tool_call",
+                },
+              ],
+            }),
+            new ToolMessage({ content: "[]", tool_call_id: "call-1", name: "list_alerts" }),
+            new AIMessage("No firing alerts."),
+          ],
+        };
+      },
+    }),
+  });
+
+  const result = await strategy.run("List alerts", { maxIterations: 3 });
+  assert.equal(result.answer, "No firing alerts.");
+  assert.equal(recursionLimit, 7);
+  assert.equal(result.metrics.llmCalls, 2);
+  assert.deepEqual(
+    result.trace.map(({ type }) => type),
+    ["action", "observation", "answer"],
+  );
+});
+
+test("ReAct reports invalid user input before invoking the agent", async () => {
+  let invoked = false;
+  const strategy = createReactStrategy({
+    tools: [],
+    agentFactory: () => ({
+      invoke: async () => {
+        invoked = true;
+        return { messages: [] };
+      },
+    }),
+  });
+  await assert.rejects(strategy.run("  "));
+  assert.equal(invoked, false);
+});
+
+test("ReAct returns explicit failure trace and metrics when graph execution fails", async () => {
+  const strategy = createReactStrategy({
+    tools: [],
+    modelFactory: () => new ChatOpenAI({ model: "test/model" }),
+    agentFactory: () => ({
+      invoke: async () => {
+        throw new Error("recursion limit reached");
+      },
+    }),
+  });
+  const result = await strategy.run("Inspect alerts", { maxIterations: 1 });
+
+  assert.match(result.answer, /^\[FAILED\]/);
+  assert.equal(result.trace[0]?.type, "observation");
+  assert.equal(result.trace[1]?.type, "answer");
+  assert.ok(result.metrics.latencyMs >= 0);
+});

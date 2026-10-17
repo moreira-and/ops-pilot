@@ -1,0 +1,61 @@
+{
+  "services": [
+    { "id": "api-gateway", "name": "API Gateway" },
+    { "id": "checkout", "name": "Checkout" },
+    { "id": "payments", "name": "Payments" },
+    { "id": "catalog", "name": "Catalog" },
+    { "id": "inventory", "name": "Inventory" },
+    { "id": "notifications", "name": "Notifications" }
+  ],
+  "alerts": [
+    {
+      "id": "alert-api-gateway-latency",
+      "serviceId": "api-gateway",
+      "title": "P95 latency above threshold",
+      "status": "firing",
+      "severity": "high"
+    },
+    {
+      "id": "alert-checkout-errors",
+      "serviceId": "checkout",
+      "title": "Checkout error rate elevated",
+      "status": "firing",
+      "severity": "critical"
+    },
+    {
+      "id": "alert-payments-queue",
+      "serviceId": "payments",
+      "title": "Payment queue backlog",
+      "status": "firing",
+      "severity": "medium"
+    },
+    {
+      "id": "alert-catalog-indexing",
+      "serviceId": "catalog",
+      "title": "Catalog indexing delay",
+      "status": "firing",
+      "severity": "high"
+    },
+    {
+      "id": "alert-inventory-recovered",
+      "serviceId": "inventory",
+      "title": "Inventory sync recovered",
+      "status": "resolved",
+      "severity": "low"
+    },
+    {
+      "id": "alert-notifications-delayed",
+      "serviceId": "notifications",
+      "title": "Notification delivery delay",
+      "status": "resolved",
+      "severity": "medium"
+    },
+    {
+      "id": "alert-api-gateway-recovered",
+      "serviceId": "api-gateway",
+      "title": "Gateway connection recovered",
+      "status": "resolved",
+      "severity": "low"
+    }
+  ]
+}

@@ -8,15 +8,17 @@
         "arena": "node --env-file-if-exists=.env --import tsx src/arena.ts",
         "bench": "node --env-file-if-exists=.env --import tsx src/bench.ts",
         "test": "node --import tsx --test \"src/**/*.test.ts\"",
-        "typecheck": "tsc"
+        "typecheck": "tsc",
+        "seed:demo": "node --import tsx src/scripts/seed-demo.ts"
     },
     "dependencies": {
         "@langchain/core": "^1.2.17",
         "@langchain/langgraph": "^1.5.0",
         "@langchain/openai": "^1.6.2",
         "express": "^5.3.0",
-        "mysql": "^2.18.1",
+        "mysql2": "^3.24.6",
         "sequelize": "^6.37.8",
+        "umzug": "^3.8.3",
         "zod": "^4.6.7"
     },
     "devDependencies": {
