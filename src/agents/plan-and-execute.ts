@@ -64,6 +64,7 @@ export interface PlanAndExecuteDependencies {
   planner?: (input: string) => Promise<PlannerOutput>;
   executor?: (input: string, step: PlanStep, done: DoneStep[]) => Promise<ExecutorOutput>;
   replanner?: (context: PlanReviewInput) => Promise<ReplannerOutput>;
+  noReplanner?: boolean;
   toolExecutor?: (
     tool: ExecutorOutput["tool"],
     args: Record<string, unknown>,
@@ -177,7 +178,9 @@ export function createPlanAndExecuteStrategy(
 
       try {
         const model =
-          dependencies.planner && dependencies.executor && dependencies.replanner
+          dependencies.planner &&
+            dependencies.executor &&
+            (dependencies.replanner || dependencies.noReplanner)
             ? undefined
             : createModel();
         const invokeModel = async <T>(
@@ -196,7 +199,9 @@ export function createPlanAndExecuteStrategy(
           dependencies.planner ??
           (async (task: string) =>
             planSchema.parse(
-              await model!.withStructuredOutput(planSchema).invoke([
+              await model!.withStructuredOutput(planSchema, {
+                method: "functionCalling",
+              }).invoke([
                 ["system", PLANNER_PROMPT],
                 ["user", task],
               ]),
@@ -206,7 +211,9 @@ export function createPlanAndExecuteStrategy(
           dependencies.executor ??
           (async (task: string, step: string, done: DoneStep[]) =>
             executorSchema.parse(
-              await model!.withStructuredOutput(executorSchema).invoke([
+              await model!.withStructuredOutput(executorSchema, {
+                method: "functionCalling",
+              }).invoke([
                 ["system", EXECUTOR_PROMPT],
                 ["user", JSON.stringify({ input: task, step, done })],
               ]),
@@ -216,7 +223,9 @@ export function createPlanAndExecuteStrategy(
           dependencies.replanner ??
           (async (context: PlanReviewInput) =>
             replannerSchema.parse(
-              await model!.withStructuredOutput(replannerSchema).invoke([
+              await model!.withStructuredOutput(replannerSchema, {
+                method: "functionCalling",
+              }).invoke([
                 ["system", REPLANNER_PROMPT],
                 ["user", JSON.stringify(context)],
               ]),
@@ -312,6 +321,10 @@ export function createPlanAndExecuteStrategy(
               done: [completed],
               latestObservation: result,
               iterations: state.iterations + 1,
+              answer:
+                dependencies.noReplanner && remaining.length === 0
+                  ? `Completed ${state.done.length + 1} planned step(s). Latest observation: ${result}`
+                  : "",
               trace: [action, observation],
             };
           })
@@ -374,7 +387,12 @@ export function createPlanAndExecuteStrategy(
           .addConditionalEdges("planner", (state) =>
             state.finished ? "finish" : "executor",
           )
-          .addEdge("executor", "replanner")
+          .addConditionalEdges("executor", (state) => {
+            if (!dependencies.noReplanner) return "replanner";
+            return state.plan.length === 0 || state.iterations >= maxIterations
+              ? "finish"
+              : "executor";
+          })
           .addConditionalEdges("replanner", (state) =>
             state.finished || state.iterations >= maxIterations
               ? "finish"

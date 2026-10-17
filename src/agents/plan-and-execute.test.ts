@@ -183,3 +183,33 @@ test("finishes without execution when the planner returns no steps", async () =>
   assert.equal(result.metrics.llmCalls, 1);
   assert.deepEqual(result.trace.map(({ type }) => type), ["plan", "answer"]);
 });
+
+test("executes the original plan without replanner model calls when disabled", async () => {
+  const executed: string[] = [];
+  const strategy = createPlanAndExecuteStrategy({
+    noReplanner: true,
+    planner: async () => ({
+      steps: ["Open checkout incident", "Resolve checkout incident"],
+    }),
+    executor: async (_input, step) => {
+      executed.push(step);
+      return {
+        tool: step.startsWith("Open") ? "open_incident" : "resolve_incident",
+        args: step.startsWith("Open")
+          ? { title: "Checkout", service: "checkout", severity: "sev2" }
+          : { id: "incident-1" },
+      };
+    },
+    toolExecutor: async () => "completed",
+  });
+
+  const result = await strategy.run("Complete the planned incident workflow");
+
+  assert.deepEqual(executed, [
+    "Open checkout incident",
+    "Resolve checkout incident",
+  ]);
+  assert.equal(result.metrics.llmCalls, 3);
+  assert.equal(result.trace.filter(({ type }) => type === "critique").length, 0);
+  assert.match(result.answer, /Completed 2 planned step/i);
+});

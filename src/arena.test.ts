@@ -45,6 +45,44 @@ test("rejects invalid and ambiguous CLI arguments", () => {
   assert.throws(() => parseArenaArgs(["--input", "x", "--max-iterations", "1.5"]));
 });
 
+test("accepts and runs both reflected strategy selectors", async () => {
+  const received: string[] = [];
+  const options = parseArenaArgs([
+    "--input",
+    "check alerts",
+    "--strategies",
+    "reflect:react,reflect:plan-and-execute",
+  ]);
+  const strategies: Record<string, ReasoningStrategy> = {
+    "reflect:react": {
+      name: "reflect:react",
+      async run(input) {
+        received.push(`${this.name}:${input}`);
+        return result;
+      },
+    },
+    "reflect:plan-and-execute": {
+      name: "reflect:plan-and-execute",
+      async run(input) {
+        received.push(`${this.name}:${input}`);
+        return result;
+      },
+    },
+  };
+  const output: string[] = [];
+
+  await runArena(options, strategies, (line) => output.push(line));
+
+  assert.deepEqual(received, [
+    "reflect:react:check alerts",
+    "reflect:plan-and-execute:check alerts",
+  ]);
+  assert.deepEqual(
+    output.filter((line) => line.startsWith("Strategy:")),
+    ["Strategy: reflect:react", "Strategy: reflect:plan-and-execute"],
+  );
+});
+
 test("runs selected strategies sequentially with the same request and reports each", async () => {
   const received: Array<{ name: string; input: string; maxIterations?: number }> = [];
   const strategies: Record<string, ReasoningStrategy> = {

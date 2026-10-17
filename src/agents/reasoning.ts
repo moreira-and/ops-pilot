@@ -14,7 +14,7 @@ const traceBaseSchema = z.object({
   sequence: z.number().int().nonnegative(),
 });
 
-export const traceEventSchema = z.discriminatedUnion("type", [
+export const traceEventSchema = z.union([
   traceBaseSchema.extend({ type: z.literal("thought"), content: z.string() }),
   traceBaseSchema.extend({
     type: z.literal("action"),
@@ -39,7 +39,17 @@ export const traceEventSchema = z.discriminatedUnion("type", [
       }),
     ).max(8),
   }),
-  traceBaseSchema.extend({ type: z.literal("critique"), content: z.string() }),
+  z.union([
+    traceBaseSchema.extend({
+      type: z.literal("critique"),
+      content: z.string(),
+    }),
+    traceBaseSchema.extend({
+      type: z.literal("critique"),
+      approved: z.boolean(),
+      feedback: z.string(),
+    }),
+  ]),
   traceBaseSchema.extend({ type: z.literal("answer"), content: z.string() }),
 ]);
 

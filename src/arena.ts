@@ -5,9 +5,15 @@ import type {
   ReasoningOptions,
   ReasoningStrategy,
 } from "./agents/reasoning.js";
+import { withReflection } from "./agents/reflection.js";
 import { formatTrace } from "./agents/trace.js";
 
-const strategyNameSchema = z.enum(["react", "plan-and-execute"]);
+const strategyNameSchema = z.enum([
+  "react",
+  "plan-and-execute",
+  "reflect:react",
+  "reflect:plan-and-execute",
+]);
 const arenaOptionsSchema = z.object({
   input: z.string().trim().min(1),
   strategies: z.array(strategyNameSchema).min(1),
@@ -145,6 +151,8 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     await runArena(options, {
       react: reactStrategy,
       "plan-and-execute": planAndExecuteStrategy,
+      "reflect:react": withReflection(reactStrategy),
+      "reflect:plan-and-execute": withReflection(planAndExecuteStrategy),
     });
   } catch (error) {
     console.error(

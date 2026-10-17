@@ -48,6 +48,10 @@ export class InMemoryOperationalStore implements OperationalStore {
       .sort((left, right) => left.id.localeCompare(right.id));
   }
 
+  async listIncidents(): Promise<IncidentRecord[]> {
+    return [...this.incidents.values()];
+  }
+
   async hasService(serviceId: string): Promise<boolean> {
     return this.services.has(serviceId);
   }
