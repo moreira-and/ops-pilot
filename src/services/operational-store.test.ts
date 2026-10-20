@@ -67,3 +67,60 @@ test("re-resolving an incident does not alter its resolved state or timestamp", 
   assert.equal(repeated.status, "resolved");
   assert.equal(repeated.resolvedAt?.getTime(), resolved.resolvedAt?.getTime());
 });
+
+test("lists incidents with explicit open, resolved, and all filters", async () => {
+  const store = new InMemoryOperationalStore({ services });
+  const open = await store.openIncident({
+    title: "Open",
+    serviceId: "api",
+    severity: "high",
+  });
+  const resolved = await store.openIncident({
+    title: "Resolved",
+    serviceId: "api",
+    severity: "low",
+  });
+  await store.resolveIncident(resolved.id);
+
+  assert.deepEqual((await store.listIncidents("open")).map(({ id }) => id), [open.id]);
+  assert.deepEqual(
+    (await store.listIncidents("resolved")).map(({ id }) => id),
+    [resolved.id],
+  );
+  assert.equal((await store.listIncidents("all")).length, 2);
+});
+
+test("keeps incident summary null and returns only the requested service runbook", async () => {
+  const store = new InMemoryOperationalStore({
+    services: [
+      ...services,
+      { id: "payments", name: "Payments" },
+    ],
+  });
+  const incident = await store.openIncident({
+    title: "Investigate",
+    serviceId: "api",
+    severity: "medium",
+  });
+  await store.upsertDemoData(
+    { services: [], alerts: [] },
+    [
+      {
+        id: "api-runbook",
+        serviceId: "api",
+        title: "API recovery",
+        instructions: "Check service health.",
+      },
+      {
+        id: "payments-runbook",
+        serviceId: "payments",
+        title: "Payment recovery",
+        instructions: "Check payment queue.",
+      },
+    ],
+  );
+
+  assert.equal(incident.summary, null);
+  assert.equal((await store.getRunbook("api"))?.id, "api-runbook");
+  assert.equal(await store.getRunbook("missing"), null);
+});

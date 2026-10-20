@@ -1,6 +1,7 @@
 import type { OperationalStore } from "./operational-store.js";
 import {
   newIncidentSchema,
+  type IncidentFilter,
   type IncidentRecord,
 } from "./operational-store.js";
 import { z } from "zod";
@@ -17,5 +18,9 @@ export class IncidentService {
   async resolveIncident(input: unknown): Promise<IncidentRecord> {
     const { id } = incidentIdSchema.parse(input);
     return this.store.resolveIncident(id);
+  }
+
+  async listIncidents(status: IncidentFilter): Promise<IncidentRecord[]> {
+    return this.store.listIncidents(status);
   }
 }

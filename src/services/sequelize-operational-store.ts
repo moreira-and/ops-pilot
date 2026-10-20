@@ -10,6 +10,7 @@ import {
   demoDataSchema,
   incidentRecordSchema,
   newIncidentSchema,
+  type IncidentFilter,
   type AlertFilter,
   type AlertRecord,
   type DemoData,
@@ -50,6 +51,39 @@ export class SequelizeOperationalStore implements OperationalStore {
     return records;
   }
 
+  async listIncidents(status: IncidentFilter): Promise<IncidentRecord[]> {
+    const rows = await Incident.findAll({
+      ...(status === "all" ? {} : { where: { status } }),
+      order: [["createdAt", "ASC"]],
+    });
+    const records: IncidentRecord[] = [];
+    for (const row of rows) {
+      const service = await Service.findByPk(row.serviceId);
+      if (!service) {
+        throw new EntityNotFoundError("Service", row.serviceId);
+      }
+      records.push(
+        incidentRecordSchema.parse({
+          id: row.id,
+          title: row.title,
+          serviceId: row.serviceId,
+          serviceName: service.name,
+          severity: row.severity,
+          status: row.status,
+          summary: null,
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+          resolvedAt: row.resolvedAt,
+        }),
+      );
+    }
+    return records;
+  }
+
+  async getRunbook(): Promise<null> {
+    return null;
+  }
+
   async hasService(serviceId: string): Promise<boolean> {
     return (await Service.findByPk(serviceId)) !== null;
   }
@@ -73,6 +107,7 @@ export class SequelizeOperationalStore implements OperationalStore {
       serviceName: service.name,
       severity: created.severity,
       status: created.status,
+      summary: null,
       createdAt: created.createdAt,
       updatedAt: created.updatedAt,
       resolvedAt: created.resolvedAt,
@@ -101,6 +136,7 @@ export class SequelizeOperationalStore implements OperationalStore {
       serviceName: service.name,
       severity: incident.severity,
       status: incident.status,
+      summary: null,
       createdAt: incident.createdAt,
       updatedAt: incident.updatedAt,
       resolvedAt: incident.resolvedAt,

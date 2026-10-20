@@ -1,22 +1,27 @@
-import { InMemoryOperationalStore } from "../services/in-memory-operational-store.js";
+import { SqliteOpsStore } from "../store/sqlite-ops-store.js";
 import { DEMO_DATA } from "./demo-data.js";
+import { DEMO_RUNBOOKS } from "./demo-runbooks.js";
 
 async function seedDemo(): Promise<void> {
-  const store = new InMemoryOperationalStore();
-  await store.upsertDemoData(DEMO_DATA);
-  const alerts = await store.listAlerts("all");
-  const servicePresence = await Promise.all(
-    DEMO_DATA.services.map(({ id }) => store.hasService(id)),
-  );
-  const serviceCount = servicePresence.filter(Boolean).length;
-  const firingCount = alerts.filter(({ status }) => status === "firing").length;
-  const resolvedCount = alerts.filter(({ status }) => status === "resolved").length;
-  if (serviceCount !== 6 || alerts.length !== 7 || firingCount !== 4 || resolvedCount !== 3) {
-    throw new Error("Demo JSON seed verification failed.");
+  const store = new SqliteOpsStore();
+  try {
+    await store.upsertDemoData(DEMO_DATA, DEMO_RUNBOOKS);
+    const alerts = await store.listAlerts("all");
+    const servicePresence = await Promise.all(
+      DEMO_DATA.services.map(({ id }) => store.hasService(id)),
+    );
+    const serviceCount = servicePresence.filter(Boolean).length;
+    const firingCount = alerts.filter(({ status }) => status === "firing").length;
+    const resolvedCount = alerts.filter(({ status }) => status === "resolved").length;
+    if (serviceCount !== 5 || alerts.length !== 6 || firingCount !== 3 || resolvedCount !== 3) {
+      throw new Error("Demo database seed verification failed.");
+    }
+    console.log(
+      `Demo database seed complete: ${serviceCount} services and ${alerts.length} alerts (${firingCount} firing, ${resolvedCount} resolved) loaded at ${process.env.OPSPILOT_DB ?? "./data/opspilot.db"}.`,
+    );
+  } finally {
+    store.close();
   }
-  console.log(
-    `Demo JSON seed complete: ${serviceCount} services and ${alerts.length} alerts (${firingCount} firing, ${resolvedCount} resolved) loaded in memory.`,
-  );
 }
 
 seedDemo().catch((error: unknown) => {

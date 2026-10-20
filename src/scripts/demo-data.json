@@ -4,8 +4,7 @@
     { "id": "checkout", "name": "Checkout" },
     { "id": "payments", "name": "Payments" },
     { "id": "catalog", "name": "Catalog" },
-    { "id": "inventory", "name": "Inventory" },
-    { "id": "notifications", "name": "Notifications" }
+    { "id": "auth", "name": "Authentication" }
   ],
   "alerts": [
     {
@@ -30,22 +29,15 @@
       "severity": "medium"
     },
     {
-      "id": "alert-catalog-indexing",
-      "serviceId": "catalog",
-      "title": "Catalog indexing delay",
-      "status": "firing",
-      "severity": "high"
-    },
-    {
       "id": "alert-inventory-recovered",
-      "serviceId": "inventory",
+      "serviceId": "catalog",
       "title": "Inventory sync recovered",
       "status": "resolved",
       "severity": "low"
     },
     {
       "id": "alert-notifications-delayed",
-      "serviceId": "notifications",
+      "serviceId": "auth",
       "title": "Notification delivery delay",
       "status": "resolved",
       "severity": "medium"

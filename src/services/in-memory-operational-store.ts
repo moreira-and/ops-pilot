@@ -4,14 +4,19 @@ import { EntityNotFoundError } from "./domain-error.js";
 import {
   alertRecordSchema,
   demoDataSchema,
+  alertFilterSchema,
+  incidentFilterSchema,
   newIncidentSchema,
+  runbookRecordSchema,
   serviceRecordSchema,
   type AlertFilter,
   type AlertRecord,
   type DemoData,
+  type IncidentFilter,
   type IncidentRecord,
   type NewIncident,
   type OperationalStore,
+  type RunbookRecord,
   type ServiceRecord,
 } from "./operational-store.js";
 
@@ -19,8 +24,12 @@ export class InMemoryOperationalStore implements OperationalStore {
   private readonly services = new Map<string, ServiceRecord>();
   private readonly alerts = new Map<string, AlertRecord>();
   private readonly incidents = new Map<string, IncidentRecord>();
+  private readonly runbooks = new Map<string, RunbookRecord>();
 
-  constructor(seed: { services?: ServiceRecord[]; alerts?: DemoData["alerts"] } = {}) {
+  constructor(
+    seed: { services?: ServiceRecord[]; alerts?: DemoData["alerts"] } = {},
+    runbooks: RunbookRecord[] = [],
+  ) {
     for (const service of seed.services ?? []) {
       const parsed = serviceRecordSchema.parse(service);
       this.services.set(parsed.id, parsed);
@@ -40,16 +49,33 @@ export class InMemoryOperationalStore implements OperationalStore {
       });
       this.alerts.set(parsed.id, parsed);
     }
+    for (const input of runbooks) {
+      const runbook = runbookRecordSchema.parse(input);
+      if (!this.services.has(runbook.serviceId)) {
+        throw new EntityNotFoundError("Service", runbook.serviceId);
+      }
+      this.runbooks.set(runbook.serviceId, runbook);
+    }
   }
 
   async listAlerts(status: AlertFilter): Promise<AlertRecord[]> {
+    const filter = alertFilterSchema.parse(status);
     return [...this.alerts.values()]
-      .filter((alert) => status === "all" || alert.status === status)
+      .filter((alert) => filter === "all" || alert.status === filter)
       .sort((left, right) => left.id.localeCompare(right.id));
   }
 
-  async listIncidents(): Promise<IncidentRecord[]> {
-    return [...this.incidents.values()];
+  async listIncidents(status: IncidentFilter): Promise<IncidentRecord[]> {
+    const filter = incidentFilterSchema.parse(status);
+    return [...this.incidents.values()]
+      .filter((incident) => filter === "all" || incident.status === filter)
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+  }
+
+  async getRunbook(serviceId: string): Promise<RunbookRecord | null> {
+    const id = z.string().trim().min(1).parse(serviceId);
+    const runbook = this.runbooks.get(id);
+    return runbook ? runbookRecordSchema.parse(runbook) : null;
   }
 
   async hasService(serviceId: string): Promise<boolean> {
@@ -68,6 +94,7 @@ export class InMemoryOperationalStore implements OperationalStore {
       id: randomUUID(),
       serviceName: service.name,
       status: "open" as const,
+      summary: null,
       createdAt: now,
       updatedAt: now,
       resolvedAt: null,
@@ -90,7 +117,10 @@ export class InMemoryOperationalStore implements OperationalStore {
     return resolved;
   }
 
-  async upsertDemoData(data: DemoData): Promise<void> {
+  async upsertDemoData(
+    data: DemoData,
+    runbooks: RunbookRecord[] = [],
+  ): Promise<void> {
     const parsed = demoDataSchema.parse(data);
     for (const service of parsed.services) {
       this.services.set(service.id, service);
@@ -110,6 +140,13 @@ export class InMemoryOperationalStore implements OperationalStore {
           updatedAt: now,
         }),
       );
+    }
+    for (const input of runbooks) {
+      const runbook = runbookRecordSchema.parse(input);
+      if (!this.services.has(runbook.serviceId)) {
+        throw new EntityNotFoundError("Service", runbook.serviceId);
+      }
+      this.runbooks.set(runbook.serviceId, runbook);
     }
   }
 }

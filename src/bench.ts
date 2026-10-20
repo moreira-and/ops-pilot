@@ -5,10 +5,13 @@ import type { ReasoningStrategy } from "./agents/reasoning.js";
 import {
   createOperationalTools,
   listAlertsInputSchema,
+  listIncidentsInputSchema,
+  consultarRunbookInputSchema,
   openIncidentInputSchema,
   resolveIncidentInputSchema,
 } from "./agents/tools.js";
 import { DEMO_DATA } from "./scripts/demo-data.js";
+import { DEMO_RUNBOOKS } from "./scripts/demo-runbooks.js";
 import { InMemoryOperationalStore } from "./services/in-memory-operational-store.js";
 
 const scenarioIdSchema = z.enum(["C1", "C2", "C3"]);
@@ -62,6 +65,8 @@ const scenarios: Record<ScenarioId, Scenario> = {
 
 type ToolInputs = {
   list_alerts: z.infer<typeof listAlertsInputSchema>;
+  list_incidents: z.infer<typeof listIncidentsInputSchema>;
+  consultar_runbook: z.infer<typeof consultarRunbookInputSchema>;
   open_incident: z.infer<typeof openIncidentInputSchema>;
   resolve_incident: z.infer<typeof resolveIncidentInputSchema>;
 };
@@ -75,6 +80,16 @@ async function executeOperationalTool(
     case "list_alerts":
       return String(
         await tools.listAlerts.invoke(listAlertsInputSchema.parse(input)),
+      );
+    case "list_incidents":
+      return String(
+        await tools.listIncidents.invoke(listIncidentsInputSchema.parse(input)),
+      );
+    case "consultar_runbook":
+      return String(
+        await tools.consultarRunbook.invoke(
+          consultarRunbookInputSchema.parse(input),
+        ),
       );
     case "open_incident":
       return String(
@@ -125,7 +140,7 @@ async function verifyScenario(
 ): Promise<boolean> {
   const [alerts, incidents] = await Promise.all([
     store.listAlerts("all"),
-    store.listIncidents(),
+    store.listIncidents("all"),
   ]);
   const firingAlerts = alerts.filter(({ status }) => status === "firing");
 
@@ -228,7 +243,7 @@ export async function runBenchmark(
   for (const scenarioId of options.scenarios) {
     const scenario = scenarios[scenarioId];
     for (const strategyName of ["react", "plan-and-execute"] as const) {
-      const store = new InMemoryOperationalStore(DEMO_DATA);
+      const store = new InMemoryOperationalStore(DEMO_DATA, DEMO_RUNBOOKS);
       const initialAlerts = await store.listAlerts("all");
       const strategies = strategyFactory(store, options.noReplanner);
       const strategy = strategies[strategyName];

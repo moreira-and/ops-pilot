@@ -8,15 +8,15 @@ OpsPilot é um copiloto de plantão para investigar alertas de produção e exec
 - Abre incidentes para serviços conhecidos e resolve incidentes existentes.
 - Disponibiliza duas estratégias: ReAct e plan-and-execute. Ambas podem ser executadas com a camada opcional de reflexão.
 - Registra rastros das ações e observações dos agentes, além de métricas de chamadas ao modelo e latência.
-- Inclui cenários de demonstração com seis serviços e sete alertas.
+- Inclui um cenário Mercadinho com cinco serviços, seis alertas e runbooks operacionais.
 - Disponibiliza uma arena de estratégias e um benchmark com cenários operacionais.
 
 ## Tecnologias
 
-- Node.js 22 LTS e TypeScript ESM em modo estrito.
+- Node.js 22.13+ LTS e TypeScript ESM em modo estrito.
 - Express 5 e Zod para a API e validação de dados.
 - LangChain e LangGraph para os agentes; OpenRouter como provedor de modelos.
-- Sequelize, MySQL e Umzug estão presentes para persistência e migrações.
+- SQLite embutido via `node:sqlite` para persistência operacional.
 - Testes com `node:test` e `tsx`.
 
 ## Arquitetura e estrutura
@@ -25,15 +25,21 @@ O código está organizado por responsabilidade em `src/`:
 
 - `http/`: aplicação Express e rota de chat.
 - `agents/`: estratégias de raciocínio, reflexão, ferramentas e rastros.
-- `services/`: regras operacionais e abstração/implementações do armazenamento.
+- `services/`: regras operacionais e contratos do armazenamento.
+- `store/`: adaptador SQLite operacional.
 - `models/` e `migrations/`: modelos Sequelize, configuração do banco e migrações.
 - `scripts/`: dados e comandos auxiliares de demonstração.
 
-O servidor e as ferramentas operacionais atualmente usam um armazenamento em memória iniciado com os dados de demonstração. Os adaptadores e migrações MySQL existem, mas ainda não estão conectados ao fluxo ativo da API ou dos agentes; portanto, alterações operacionais não persistem entre execuções.
+O servidor e as ferramentas operacionais usam SQLite no caminho configurado por `OPSPILOT_DB`
+(padrão `./data/opspilot.db`). Serviços, alertas, incidentes e runbooks permanecem disponíveis
+após reinícios. A criação do schema e a carga do cenário Mercadinho são idempotentes. O adaptador
+em memória permanece disponível para testes e benchmarks isolados; arquivos locais de banco em
+`data/` não são versionados. Os artefatos Sequelize/MySQL legados não fazem parte do fluxo ativo
+de persistência operacional.
 
 ## Pré-requisitos e instalação
 
-- Node.js 22 LTS.
+- Node.js 22.13+ LTS.
 - npm.
 - Uma chave e um identificador de modelo do OpenRouter para executar estratégias que chamam o modelo.
 
@@ -53,12 +59,12 @@ Inicie a API:
 npm run dev
 ```
 
-Envie uma mensagem para `POST /chat`. A estratégia padrão é `react`; a alternativa é `plan-and-execute`. O campo `reflact` (com essa grafia na API) habilita a reflexão:
+Envie uma mensagem para `POST /chat`. A estratégia padrão é `react`; a alternativa é `plan-and-execute`. O campo `reflact` (com essa grafia na API) habilita a reflexão, que faz chamadas adicionais ao modelo após a operação:
 
 ```sh
 curl -s http://localhost:3000/chat \
   -H 'content-type: application/json' \
-  -d '{"message":"abra um incidente sev2 para o catalog","strategy":"react","reflact":true}' \
+  -d '{"message":"abra um incidente sev2 para o catalog","strategy":"react"}' \
   | jq '{answer, llmCalls: .metrics.llmCalls}'
 ```
 
@@ -72,7 +78,7 @@ Execute uma ou mais estratégias sobre a mesma solicitação:
 npm run arena -- --input "Resuma os alertas disparando" --strategies react,plan-and-execute --max-iterations 8
 ```
 
-Também são aceitos os seletores `reflect:react` e `reflect:plan-and-execute`. A arena executa as estratégias em sequência; as alterações feitas nas ferramentas são compartilhadas durante aquela execução e descartadas ao final do processo.
+Também são aceitos os seletores `reflect:react` e `reflect:plan-and-execute`. A arena executa as estratégias em sequência; elas compartilham as ferramentas operacionais e suas alterações são persistidas no banco SQLite. O benchmark, por outro lado, executa cada combinação de cenário e estratégia em uma store em memória isolada.
 
 ### Benchmark
 
@@ -86,15 +92,21 @@ O benchmark requer configuração do OpenRouter e imprime uma tabela com acerto,
 
 ## Testes e verificação
 
-Os testes automatizados usam dados e dependências controlados e não precisam de credenciais do OpenRouter ou do MySQL:
+Os testes automatizados usam dados e dependências controlados e não precisam de credenciais do OpenRouter:
 
 ```sh
 npm test
 npm run typecheck
 ```
 
-O comando a seguir valida os dados de demonstração em memória; ele não grava no MySQL:
+O comando a seguir carrega/verifica o cenário Mercadinho no banco configurado por
+`OPSPILOT_DB` (ou em `./data/opspilot.db` por padrão):
 
 ```sh
 npm run seed:demo
 ```
+
+O cenário possui cinco serviços e seis alertas (três `firing` e três `resolved`), além de
+runbooks para `checkout`, `payments` e `auth`. A ferramenta `list_incidents` filtra por `open`,
+`resolved` ou `all` (padrão `open`); `consultar_runbook` retorna o procedimento do serviço
+solicitado sem executá-lo.

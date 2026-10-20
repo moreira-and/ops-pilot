@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createPlanAndExecuteStrategy } from "./plan-and-execute.js";
+import { createOperationalTools } from "./tools.js";
+import { DEMO_DATA } from "../scripts/demo-data.js";
+import { DEMO_RUNBOOKS } from "../scripts/demo-runbooks.js";
+import { SqliteOpsStore } from "../store/sqlite-ops-store.js";
 
 const finish = {
   decision: "finish" as const,
@@ -212,4 +216,48 @@ test("executes the original plan without replanner model calls when disabled", a
   assert.equal(result.metrics.llmCalls, 3);
   assert.equal(result.trace.filter(({ type }) => type === "critique").length, 0);
   assert.match(result.answer, /Completed 2 planned step/i);
+});
+
+test("routes incident-list and runbook operations through isolated operational tools", async () => {
+  const store = new SqliteOpsStore(":memory:");
+  await store.upsertDemoData(DEMO_DATA, DEMO_RUNBOOKS);
+  const operationalTools = createOperationalTools(store);
+  const requests = [
+    {
+      step: "List open incidents",
+      tool: "list_incidents" as const,
+      args: { status: "open" },
+    },
+    {
+      step: "Consult checkout runbook",
+      tool: "consultar_runbook" as const,
+      args: { service: "checkout" },
+    },
+  ];
+
+  try {
+    for (const request of requests) {
+      const strategy = createPlanAndExecuteStrategy({
+        operationalTools,
+        noReplanner: true,
+        planner: async () => ({ steps: [request.step] }),
+        executor: async () => ({ tool: request.tool, args: request.args }),
+      });
+      const result = await strategy.run(request.step);
+      assert.ok(result.trace.some(
+        (event) =>
+          event.type === "action" &&
+          event.tool === request.tool,
+      ));
+      const observation = result.trace.find(
+        (event) => event.type === "observation" && event.tool === request.tool,
+      );
+      assert.ok(observation && observation.type === "observation");
+      if (request.tool === "consultar_runbook") {
+        assert.match(observation.content, /checkout/);
+      }
+    }
+  } finally {
+    store.close();
+  }
 });

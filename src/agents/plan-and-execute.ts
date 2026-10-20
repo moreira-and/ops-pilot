@@ -14,8 +14,10 @@ import {
 } from "./reasoning.js";
 import {
   listAlertsInputSchema,
+  listIncidentsInputSchema,
   openIncidentInputSchema,
-  opsTools,
+  getDefaultOperationalTools,
+  consultarRunbookInputSchema,
   resolveIncidentInputSchema,
 } from "./tools.js";
 import { redactToolArgs } from "./trace.js";
@@ -27,7 +29,13 @@ export const planSchema = z.object({
 });
 
 export const executorSchema = z.object({
-  tool: z.enum(["list_alerts", "open_incident", "resolve_incident"]),
+  tool: z.enum([
+    "list_alerts",
+    "open_incident",
+    "resolve_incident",
+    "list_incidents",
+    "consultar_runbook",
+  ]),
   args: z.record(z.string(), z.unknown()),
 });
 
@@ -39,10 +47,10 @@ export const replannerSchema = z.object({
 });
 
 export const PLANNER_PROMPT =
-  "Crie um plano operacional curto e ordenado para atender ao pedido. Use apenas operações disponíveis: listar alertas por status (firing, resolved ou all), abrir incidente ou resolver incidente. Retorne no máximo oito passos como instruções simples. Se nenhuma ação for necessária, retorne uma lista vazia.";
+  "Crie um plano operacional curto e ordenado para atender ao pedido. Use apenas operações disponíveis: listar alertas por status (firing, resolved ou all), abrir, listar ou resolver incidentes, e consultar o runbook de um serviço. Retorne no máximo oito passos como instruções simples. Se nenhuma ação for necessária, retorne uma lista vazia.";
 
 const EXECUTOR_PROMPT =
-  "Escolha uma única ferramenta operacional e seus argumentos para executar exatamente o passo atual. Use list_alerts com status firing, resolved ou all; open_incident com title, service e severity (critical/high/medium/low ou sev1/sev2/sev3/sev4, em que sev1=critical, sev2=high, sev3=medium e sev4=low); ou resolve_incident com id. Não invente dados ausentes: escolha a ação mais segura e informe falhas pela ferramenta quando aplicável.";
+  "Escolha uma única ferramenta operacional e seus argumentos para executar exatamente o passo atual. Use list_alerts com status firing, resolved ou all; open_incident com title, service e severity (critical/high/medium/low ou sev1/sev2/sev3/sev4, em que sev1=critical, sev2=high, sev3=medium e sev4=low); resolve_incident com id; list_incidents com status open, resolved ou all (padrão open); ou consultar_runbook com service. Não invente dados ausentes: escolha a ação mais segura e informe falhas pela ferramenta quando aplicável.";
 
 const REPLANNER_PROMPT =
   "Revise o pedido, o plano restante e os resultados concluídos. Decida se deve ajustar (adjust) os passos restantes, seguir o plano (continue), ou encerrar (finish). Nunca repita um passo concluído nem proponha mais do que oito passos no total. Ao encerrar, forneça uma resposta concisa baseada nos resultados.";
@@ -65,6 +73,7 @@ export interface PlanAndExecuteDependencies {
   executor?: (input: string, step: PlanStep, done: DoneStep[]) => Promise<ExecutorOutput>;
   replanner?: (context: PlanReviewInput) => Promise<ReplannerOutput>;
   noReplanner?: boolean;
+  operationalTools?: ReturnType<typeof getDefaultOperationalTools>;
   toolExecutor?: (
     tool: ExecutorOutput["tool"],
     args: Record<string, unknown>,
@@ -144,6 +153,7 @@ function errorMessage(error: unknown): string {
 function executeTool(
   tool: ExecutorOutput["tool"],
   args: Record<string, unknown>,
+  opsTools: ReturnType<typeof getDefaultOperationalTools>,
 ): Promise<unknown> {
   switch (tool) {
     case "list_alerts":
@@ -152,6 +162,10 @@ function executeTool(
       return opsTools.openIncident.invoke(openIncidentInputSchema.parse(args));
     case "resolve_incident":
       return opsTools.resolveIncident.invoke(resolveIncidentInputSchema.parse(args));
+    case "list_incidents":
+      return opsTools.listIncidents.invoke(listIncidentsInputSchema.parse(args));
+    case "consultar_runbook":
+      return opsTools.consultarRunbook.invoke(consultarRunbookInputSchema.parse(args));
   }
 }
 
@@ -230,7 +244,13 @@ export function createPlanAndExecuteStrategy(
                 ["user", JSON.stringify(context)],
               ]),
             ));
-        const runTool = dependencies.toolExecutor ?? executeTool;
+        const runTool = dependencies.toolExecutor ??
+          ((tool, args) =>
+            executeTool(
+              tool,
+              args,
+              dependencies.operationalTools ?? getDefaultOperationalTools(),
+            ));
 
         const State = Annotation.Root({
           input: Annotation<string>(),

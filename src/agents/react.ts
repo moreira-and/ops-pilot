@@ -20,7 +20,7 @@ import {
   type ReasoningStrategy,
   type TraceEvent,
 } from "./reasoning.js";
-import { opsTools } from "./tools.js";
+import { getDefaultOperationalTools } from "./tools.js";
 import { DomainError } from "../services/domain-error.js";
 import { DatabaseConfigurationError } from "../models/database.js";
 import { ModelConfigurationError } from "./model.js";
@@ -154,7 +154,7 @@ function failureMessage(error: unknown): string {
 export function createReactStrategy(
   dependencies: ReactStrategyDependencies = {},
 ): ReasoningStrategy {
-  const tools = dependencies.tools ?? Object.values(opsTools);
+  let defaultTools: StructuredToolInterface[] | undefined;
   const modelFactory = dependencies.modelFactory ?? createModel;
   const agentFactory =
     dependencies.agentFactory ??
@@ -169,6 +169,8 @@ export function createReactStrategy(
       const elapsed = startTimer();
       const counter = new ModelCallCounter();
       try {
+        const tools = dependencies.tools ??
+          (defaultTools ??= Object.values(getDefaultOperationalTools()));
         const agent = agentFactory(modelFactory(), tools);
         const state = await agent.invoke(
           { messages: [new HumanMessage(parsedInput)] },

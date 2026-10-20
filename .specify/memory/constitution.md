@@ -1,8 +1,9 @@
 <!--
 Sync Impact Report
-Version change: unratified template -> 1.0.0
-Modified principles: template placeholders -> five OpsPilot core principles
-Added sections: Technology Stack and Runtime; Development Workflow
+Version change: 1.0.0 -> 2.0.0
+Modified principles: I. Explicit MVC Layers and Pure Domain Logic (SQLite persistence requirements added)
+Added principles: VI. Embedded SQLite Persistence
+Added sections: none
 Removed sections: none
 Follow-up TODOs: none
 -->
@@ -35,11 +36,20 @@ Secrets MUST NOT be committed or hard-coded. Agents MUST NOT read the contents o
 commands that could inspect it MUST require explicit approval. Destructive actions MUST use explicit
 guardrails and human review, not model discretion alone.
 
+### VI. Embedded SQLite Persistence
+Operational data MUST be persisted in an embedded SQLite database through Node.js `node:sqlite`
+(`DatabaseSync`); the application MUST NOT depend on a separately hosted traditional database
+service. Every query MUST use prepared statements and bound values; SQL MUST NOT be assembled by
+concatenating input. Database constraints MUST enforce closed domain values. Tests and reproducible
+bench scenarios MUST be able to use an in-memory database.
+
 ## Technology Stack and Runtime
 
 The project targets Node.js 22 LTS and uses TypeScript ESM with `strict: true`. The HTTP API uses
-Express; persistence uses Sequelize with MySQL. Zod is the validation library at HTTP and CLI
-boundaries. The production-alert and incident agent uses LangChain/LangGraph with OpenRouter.
+Express; operational persistence uses the built-in `node:sqlite` module. The database path is
+configured by `OPSPILOT_DB` and defaults to `./data/opspilot.db`; tests and reproducible benchmark
+scenarios use `:memory:`. Zod is the validation library at HTTP and CLI boundaries. The
+production-alert and incident agent uses LangChain/LangGraph with OpenRouter.
 
 ## Development Workflow
 
@@ -56,4 +66,4 @@ incompatible governance changes, MINOR for new or materially expanded principles
 clarifications or non-semantic edits. Specs, plans, tasks, and code reviews MUST be checked for
 compliance. Runtime guidance is maintained in `.github/copilot-instructions.md`.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-17 | **Last Amended**: 2026-10-17
+**Version**: 2.0.0 | **Ratified**: 2026-10-17 | **Last Amended**: 2026-10-18

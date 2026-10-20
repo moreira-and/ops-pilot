@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   formatBenchmarkTable,
@@ -70,7 +74,7 @@ const testStrategyFactory: BenchStrategyFactory = (store) => {
       serviceId: oldest.serviceId,
       severity: oldest.severity,
     });
-    const openIncidents = await store.listIncidents();
+    const openIncidents = await store.listIncidents("open");
     const addressedServices = new Set(
       openIncidents.map(({ serviceId }) => serviceId),
     );
@@ -145,7 +149,7 @@ test("checks incident ordering, severity, and resolved state in the store", asyn
   assert.equal(rows.length, 2);
   assert.ok(rows.every(({ accuracy }) => accuracy));
   assert.deepEqual(
-    (await store.listIncidents()).map(({ serviceId, severity, status }) => ({
+    (await store.listIncidents("all")).map(({ serviceId, severity, status }) => ({
       serviceId,
       severity,
       status,
@@ -156,4 +160,45 @@ test("checks incident ordering, severity, and resolved state in the store", asyn
       { serviceId: "catalog", severity: "medium", status: "open" },
     ],
   );
+});
+
+test("creates an isolated in-memory store for each benchmark strategy", async () => {
+  const stores: InMemoryOperationalStore[] = [];
+  const directory = await mkdtemp(join(tmpdir(), "ops-pilot-bench-"));
+  const persistentPath = join(directory, "should-not-exist.db");
+  const previousDatabasePath = process.env.OPSPILOT_DB;
+  process.env.OPSPILOT_DB = persistentPath;
+  const factory: BenchStrategyFactory = (store) => {
+    stores.push(store);
+    const strategy = (name: string): ReasoningStrategy => ({
+      name,
+      run: async () => ({
+        answer: "0",
+        trace: [],
+        metrics: { llmCalls: 1, latencyMs: 1 },
+      }),
+    });
+    return {
+      react: strategy("react"),
+      "plan-and-execute": strategy("plan-and-execute"),
+    };
+  };
+
+  try {
+    await runBenchmark({ scenarios: ["C1"], noReplanner: false }, factory);
+
+    assert.equal(stores.length, 2);
+    assert.notEqual(stores[0], stores[1]);
+    assert.ok(stores.every((store) => store instanceof InMemoryOperationalStore));
+    assert.equal((await stores[0]!.listIncidents("all")).length, 0);
+    assert.equal((await stores[1]!.listIncidents("all")).length, 0);
+    assert.equal(existsSync(persistentPath), false);
+  } finally {
+    if (previousDatabasePath === undefined) {
+      delete process.env.OPSPILOT_DB;
+    } else {
+      process.env.OPSPILOT_DB = previousDatabasePath;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
 });
