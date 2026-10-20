@@ -6,6 +6,7 @@ OpsPilot é um copiloto de plantão para investigar alertas de produção e exec
 
 - Lista alertas por estado (`firing`, `resolved` ou `all`).
 - Abre incidentes para serviços conhecidos e resolve incidentes existentes.
+- Expõe as operações de alertas e incidentes a clientes MCP por transporte stdio.
 - Disponibiliza duas estratégias: ReAct e plan-and-execute. Ambas podem ser executadas com a camada opcional de reflexão.
 - Registra rastros das ações e observações dos agentes, além de métricas de chamadas ao modelo e latência.
 - Inclui um cenário Mercadinho com cinco serviços, seis alertas e runbooks operacionais.
@@ -27,6 +28,7 @@ O código está organizado por responsabilidade em `src/`:
 - `agents/`: estratégias de raciocínio, reflexão, ferramentas e rastros.
 - `services/`: regras operacionais e contratos do armazenamento.
 - `store/`: adaptador SQLite operacional.
+- `mcp/`: servidor MCP stdio e ferramentas operacionais expostas.
 - `models/` e `migrations/`: modelos Sequelize, configuração do banco e migrações.
 - `scripts/`: dados e comandos auxiliares de demonstração.
 
@@ -90,6 +92,44 @@ npm run bench
 
 O benchmark requer configuração do OpenRouter e imprime uma tabela com acerto, chamadas ao modelo e latência.
 
+### Servidor MCP
+
+O OpsPilot também pode ser iniciado como um servidor MCP local por stdio. O cliente MCP
+inicia o processo e troca mensagens JSON-RPC por stdin/stdout; o stdout é reservado ao
+protocolo, e diagnósticos são enviados ao stderr.
+
+Inicie o servidor manualmente:
+
+```sh
+npm run mcp
+```
+
+Não é necessário configurar credenciais do OpenRouter para usar as ferramentas MCP. O
+servidor usa o banco SQLite configurado por `OPSPILOT_DB` (padrão `./data/opspilot.db`).
+Um cliente MCP pode usar esta configuração:
+
+```json
+{
+  "servers": {
+    "opspilot": {
+      "type": "stdio",
+      "command": "npm",
+      "args": ["run", "--silent", "mcp"]
+    }
+  }
+}
+```
+
+O servidor anuncia estas ferramentas:
+
+- `list_alerts`: lista alertas; `status` aceita `firing`, `resolved` ou `all` e, se omitido, assume `firing`.
+- `open_incident`: abre um incidente com `title`, `service` e `severity`. A severidade aceita `critical`, `high`, `medium`, `low` ou os aliases `sev1`–`sev4`.
+- `resolve_incident`: resolve um incidente existente usando seu `id`.
+
+As ferramentas usam as mesmas validações e a mesma store operacional das ferramentas do
+OpsPilot, portanto incidentes criados ou resolvidos via MCP ficam disponíveis nas demais
+interfaces que usam esse banco.
+
 ## Testes e verificação
 
 Os testes automatizados usam dados e dependências controlados e não precisam de credenciais do OpenRouter:
@@ -97,6 +137,12 @@ Os testes automatizados usam dados e dependências controlados e não precisam d
 ```sh
 npm test
 npm run typecheck
+```
+
+O teste de integração do servidor MCP pode ser executado isoladamente:
+
+```sh
+node --import tsx --test src/mcp/server.test.ts
 ```
 
 O comando a seguir carrega/verifica o cenário Mercadinho no banco configurado por
