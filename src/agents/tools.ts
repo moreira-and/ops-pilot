@@ -40,6 +40,70 @@ export const listIncidentsInputSchema = z.object({
 export const consultarRunbookInputSchema = z.object({
   service: z.string().trim().min(1).describe("Identificador do serviço cujo runbook será consultado."),
 });
+export const checkProviderStatusInputSchema = z.object({
+  provider: z.enum(["github", "cloudflare"])
+    .default("github")
+    .describe("Provedor para consultar quando houver suspeita de problema externo ou dependência fora do ar; padrão github."),
+});
+
+const providerStatusResponseSchema = z.object({
+  status: z.object({
+    indicator: z.string(),
+    description: z.string(),
+  }),
+});
+
+const STATUS_URL = {
+  github: "https://www.githubstatus.com/api/v2/status.json",
+  cloudflare: "https://www.cloudflarestatus.com/api/v2/status.json",
+} as const;
+
+async function fetchProviderStatus(
+  provider: keyof typeof STATUS_URL,
+  doFetch = fetch,
+): Promise<string> {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    let response: Response;
+    try {
+      response = await doFetch(STATUS_URL[provider], {
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch (error) {
+      if (attempt < 2) continue;
+      const message = (error instanceof Error ? error.message : String(error))
+        .replace(/\s+/g, " ")
+        .trim();
+      return `Não consegui consultar o status de ${provider} após 2 tentativas (${message}). Responda com base nos alertas internos e avise o plantonista.`;
+    }
+
+    if (response.status >= 500) {
+      if (attempt < 2) continue;
+      return `Status page de ${provider} respondeu HTTP ${response.status} após 2 tentativas. Responda com base nos alertas internos e avise o plantonista.`;
+    }
+
+    if (!response.ok) {
+      return `Status page de ${provider} respondeu HTTP ${response.status}. Responda com base nos alertas internos e avise o plantonista.`;
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      return `Status page de ${provider} retornou uma resposta inválida. Responda com base nos alertas internos e avise o plantonista.`;
+    }
+
+    const parsed = providerStatusResponseSchema.safeParse(payload);
+    if (!parsed.success) {
+      return `Status page de ${provider} retornou uma resposta inválida. Responda com base nos alertas internos e avise o plantonista.`;
+    }
+
+    const indicator = parsed.data.status.indicator.replace(/\s+/g, " ").trim();
+    const description = parsed.data.status.description.replace(/\s+/g, " ").trim();
+    return `${provider} está ${indicator} - ${description}`;
+  }
+
+  return `Não consegui consultar o status de ${provider} após 2 tentativas. Responda com base nos alertas internos e avise o plantonista.`;
+}
 
 function normalizeSeverity(
   value: z.infer<typeof severity>,
@@ -58,10 +122,23 @@ function normalizeSeverity(
   }
 }
 
-export function createOperationalTools(store: OperationalStore) {
+export function createOperationalTools(
+  store: OperationalStore,
+  fetchImpl: typeof fetch = fetch,
+) {
   const alerts = new AlertService(store);
   const incidents = new IncidentService(store);
   const runbooks = new RunbookService(store);
+
+  const checkProviderStatus = tool(
+    async ({ provider }) => fetchProviderStatus(provider, fetchImpl),
+    {
+      name: "check_provider_status",
+      description:
+        "Consulta o status público do GitHub ou Cloudflare. Use quando houver suspeita de problema externo ou dependência fora do ar para distinguir se o problema é do serviço local ou do provedor. Se a consulta falhar, responda com base nos alertas internos e avise o plantonista; não invente nem afirme um status que não foi retornado.",
+      schema: checkProviderStatusInputSchema,
+    },
+  );
 
   const listAlerts = tool(
     async ({ status }) =>
@@ -136,7 +213,14 @@ export function createOperationalTools(store: OperationalStore) {
     },
   );
 
-  return { listAlerts, openIncident, resolveIncident, listIncidents, consultarRunbook };
+  return {
+    listAlerts,
+    openIncident,
+    resolveIncident,
+    listIncidents,
+    consultarRunbook,
+    check_provider_status: checkProviderStatus,
+  };
 }
 
 let defaultTools: ReturnType<typeof createOperationalTools> | undefined;
