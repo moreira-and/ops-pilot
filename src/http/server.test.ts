@@ -4,6 +4,12 @@ import test from "node:test";
 import type { Server } from "node:http";
 import { createApp } from "./server.js";
 import type { ReasoningResult, ReasoningStrategy } from "../agents/reasoning.js";
+import type {
+  Conversation,
+  ConversationMessage,
+  ConversationMessageRole,
+  ConversationStore,
+} from "../services/conversation-store.js";
 
 function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
   return {
@@ -18,6 +24,48 @@ function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
       return result;
     },
   };
+}
+
+class FakeConversationStore implements ConversationStore {
+  private nextId = 1;
+  private readonly conversations = new Map<string, ConversationMessage[]>();
+  failAssistantAppend = false;
+
+  async create(): Promise<Conversation> {
+    const conversation = {
+      id: `conversation-${this.nextId++}`,
+      createdAt: new Date(),
+    };
+    this.conversations.set(conversation.id, []);
+    return conversation;
+  }
+
+  async append(
+    conversationId: string,
+    role: ConversationMessageRole,
+    content: string,
+  ): Promise<void> {
+    if (this.failAssistantAppend && role === "assistant") {
+      throw new Error("Storage unavailable");
+    }
+    const messages = this.conversations.get(conversationId);
+    if (!messages) throw new Error("Unknown conversation");
+    messages.push({
+      role,
+      content,
+      conversationId,
+      sequence: messages.length + 1,
+      createdAt: new Date(),
+    });
+  }
+
+  async lastMessages(
+    conversationId: string,
+    limit: number,
+  ): Promise<ConversationMessage[] | null> {
+    const messages = this.conversations.get(conversationId);
+    return messages ? messages.slice(-limit) : null;
+  }
 }
 
 async function startServer(app: ReturnType<typeof createApp>) {
@@ -53,12 +101,152 @@ test("POST /chat defaults to react and returns a reasoning result", async (t) =>
   });
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    answer: "react: Summarize the alert",
-    trace: [{ sequence: 0, type: "answer", content: "react: Summarize the alert" }],
-    metrics: { llmCalls: 1, latencyMs: 1 },
-  });
+  const body = await response.json() as ReasoningResult & {
+    conversationId: string;
+    metrics: ReasoningResult["metrics"] & { historyMessages: number };
+  };
+  assert.equal(body.answer, "react: Summarize the alert");
+  assert.equal(body.conversationId.length > 0, true);
+  assert.equal(body.metrics.historyMessages, 0);
   assert.deepEqual(calls, ["Summarize the alert"]);
+});
+
+test("POST /chat resumes a conversation and returns its ID", async (t) => {
+  const store = new FakeConversationStore();
+  const conversation = await store.create();
+  await store.append(conversation.id, "user", "Earlier question");
+  const calls: string[] = [];
+  const { server, url } = await startServer(
+    createApp({
+      conversationStore: store,
+      strategies: { react: fakeStrategy("react", calls) },
+    }),
+  );
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      message: "Continue",
+      conversationId: conversation.id,
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    conversationId: string;
+    metrics: { historyMessages: number };
+  };
+  assert.equal(body.conversationId, conversation.id);
+  assert.equal(body.metrics.historyMessages, 1);
+  assert.match(calls[0] ?? "", /User: Earlier question\nUser: Continue/);
+});
+
+test("POST /chat rejects an unknown conversation without running a strategy", async (t) => {
+  const calls: string[] = [];
+  const { server, url } = await startServer(
+    createApp({
+      conversationStore: new FakeConversationStore(),
+      strategies: { react: fakeStrategy("react", calls) },
+    }),
+  );
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Continue", conversationId: "missing" }),
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "Conversation not found" });
+  assert.deepEqual(calls, []);
+});
+
+test("POST /chat does not return success when message persistence fails", async (t) => {
+  const store = new FakeConversationStore();
+  const conversation = await store.create();
+  store.failAssistantAppend = true;
+  const { server, url } = await startServer(createApp({
+    conversationStore: store,
+    strategies: { react: fakeStrategy("react", []) },
+  }));
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Continue", conversationId: conversation.id }),
+  });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { error: "Internal server error" });
+});
+
+test("POST /chat creates unique conversation IDs when none are supplied", async (t) => {
+  const store = new FakeConversationStore();
+  const { server, url } = await startServer(
+    createApp({
+      conversationStore: store,
+      strategies: { react: fakeStrategy("react", []) },
+    }),
+  );
+  t.after(() => closeServer(server));
+
+  const conversationIds: string[] = [];
+  for (const message of ["First conversation", "Second conversation"]) {
+    const response = await fetch(`${url}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { conversationId: string };
+    assert.ok(body.conversationId);
+    conversationIds.push(body.conversationId);
+  }
+  assert.notEqual(conversationIds[0], conversationIds[1]);
+});
+
+test("POST /chat reports exactly the number of previous messages included", async (t) => {
+  const store = new FakeConversationStore();
+  const scenarios = [];
+  for (const count of [0, 1, 12, 14]) {
+    const conversation = await store.create();
+    for (let index = 0; index < count; index += 1) {
+      await store.append(
+        conversation.id,
+        index % 2 === 0 ? "user" : "assistant",
+        `history-${count}-${index}`,
+      );
+    }
+    scenarios.push({ conversationId: conversation.id, expected: Math.min(count, 12) });
+  }
+
+  const { server, url } = await startServer(
+    createApp({
+      conversationStore: store,
+      strategies: { react: fakeStrategy("react", []) },
+    }),
+  );
+  t.after(() => closeServer(server));
+
+  for (const scenario of scenarios) {
+    const response = await fetch(`${url}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Check current status",
+        conversationId: scenario.conversationId,
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      metrics: { historyMessages: number };
+    };
+    assert.equal(body.metrics.historyMessages, scenario.expected);
+  }
 });
 
 test("POST /chat returns Zod issues for an invalid request body", async (t) => {

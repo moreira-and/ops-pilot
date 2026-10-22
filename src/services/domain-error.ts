@@ -14,6 +14,12 @@ export class EntityNotFoundError extends DomainError {
   }
 }
 
+export class ConversationNotFoundError extends EntityNotFoundError {
+  constructor(id: string) {
+    super("Conversation", id);
+  }
+}
+
 export class ValidationDomainError extends DomainError {
   constructor(message: string) {
     super(message, "VALIDATION_ERROR");
