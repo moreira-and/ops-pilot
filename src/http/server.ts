@@ -3,6 +3,11 @@ import { z } from "zod";
 import { strategyRegistry } from "../agents/index.js";
 import { withReflection } from "../agents/reflection.js";
 import {
+  contextBudgetSchema,
+  parseContextBudget,
+  type ContextBudget,
+} from "../context/context-builder.js";
+import {
   reasoningMetricsSchema,
   reasoningResultSchema,
   type ReasoningStrategy,
@@ -39,6 +44,8 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 export interface ChatServerOptions {
   strategies?: Record<string, ReasoningStrategy>;
   reflectionDecorator?: (strategy: ReasoningStrategy) => ReasoningStrategy;
+  contextBudget?: ContextBudget;
+  env?: Pick<NodeJS.ProcessEnv, "CONTEXT_BUDGET">;
   conversationStore?: ConversationStore;
   memoryStore?: MemoryRecallStore;
   learningService?: ChatLearningService;
@@ -90,6 +97,12 @@ function sendFailure(
 }
 
 export function createApp(options: ChatServerOptions = {}): Express {
+  const rawContextBudget = options.env === undefined
+    ? process.env.CONTEXT_BUDGET
+    : options.env.CONTEXT_BUDGET;
+  const contextBudget = options.contextBudget === undefined
+    ? parseContextBudget(rawContextBudget)
+    : contextBudgetSchema.parse(options.contextBudget);
   const strategies = options.strategies ?? strategyRegistry;
   const reflectionDecorator = options.reflectionDecorator ?? withReflection;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -137,7 +150,10 @@ export function createApp(options: ChatServerOptions = {}): Express {
         {
           run: (input, strategyOptions) =>
             runWithTimeout(
-              strategy.run(composeStrategyInput(input), strategyOptions),
+              strategy.run(
+                composeStrategyInput(input, contextBudget),
+                strategyOptions,
+              ),
               timeoutMs,
             ),
         },

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
+import { buildContext } from "../context/context-builder.js";
 import { ModelCallCounter } from "./metrics.js";
 import { createReactStrategy, MEMORY_CAPABILITY_PROMPT } from "./react.js";
 
@@ -80,6 +81,7 @@ test("ReAct exposes forget_preference with trusted request context", async () =>
   let toolNames: string[] = [];
   let contextUserId = "";
   let systemPrompt = "";
+  let receivedUserPrompt = "";
   const strategy = createReactStrategy({
     tools: [],
     memoryStore: {
@@ -91,17 +93,28 @@ test("ReAct exposes forget_preference with trusted request context", async () =>
       toolNames = tools.map(({ name }) => name);
       systemPrompt = options.prompt;
       return {
-        async invoke(_input, config) {
+        async invoke(input, config) {
           contextUserId = config?.context?.userId ?? "";
+          const userMessage = input.messages[0];
+          receivedUserPrompt = userMessage instanceof HumanMessage
+            ? String(userMessage.content)
+            : "";
           return { messages: [new AIMessage("Done.")] };
         },
       };
     },
   });
 
-  await strategy.run("Forget my email preference.", { userId: "operator-1" });
+  const userPrompt = buildContext({
+    message: "Forget my email preference.",
+    summary: "An old preference.",
+    history: [],
+    memories: [],
+  }, { summary: 0, history: 0, memories: 0 }).prompt;
+  await strategy.run(userPrompt, { userId: "operator-1" });
   assert.deepEqual(toolNames, ["forget_preference"]);
   assert.equal(contextUserId, "operator-1");
+  assert.equal(receivedUserPrompt, userPrompt);
   assert.equal(systemPrompt, MEMORY_CAPABILITY_PROMPT);
   assert.match(systemPrompt, /nunca afirme que uma preferência já foi salva/i);
 });

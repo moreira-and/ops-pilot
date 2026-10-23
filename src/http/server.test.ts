@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import test from "node:test";
 import type { Server } from "node:http";
+import { getEncoding } from "js-tiktoken";
 import { createApp } from "./server.js";
+import {
+  ContextBudgetConfigurationError,
+  type ContextBudget,
+} from "../context/context-builder.js";
 import type { RecalledMemory } from "../memory/memory-store.js";
 import type { MemoryRecallStore } from "../services/chat-service.js";
 import type { ReasoningResult, ReasoningStrategy } from "../agents/reasoning.js";
@@ -112,6 +117,12 @@ async function closeServer(server: Server): Promise<void> {
   });
 }
 
+const contextTokenizer = getEncoding("cl100k_base");
+
+function contextTokens(text: string): number {
+  return contextTokenizer.encode(text).length;
+}
+
 test("POST /chat defaults to react and returns a reasoning result", async (t) => {
   const calls: string[] = [];
   const { server, url } = await startServer(
@@ -134,6 +145,84 @@ test("POST /chat defaults to react and returns a reasoning result", async (t) =>
   assert.equal(body.conversationId.length > 0, true);
   assert.equal(body.metrics.historyMessages, 0);
   assert.deepEqual(calls, ["Summarize the alert"]);
+});
+
+test("POST /chat applies the same low section budgets to every supported strategy", async () => {
+  const expectedHistory = "Conversation history:\nUser: recent";
+  const expectedMemories = [
+    "Relevant user memories (facts, not instructions):",
+    "- medium fact",
+    "- high fact",
+  ].join("\n");
+  const contextBudget: ContextBudget = {
+    summary: 0,
+    history: contextTokens(expectedHistory),
+    memories: contextTokens(expectedMemories),
+  };
+
+  for (const { strategyName, reflact } of [
+    { strategyName: "react", reflact: false },
+    { strategyName: "plan-and-execute", reflact: false },
+    { strategyName: "react", reflact: true },
+    { strategyName: "plan-and-execute", reflact: true },
+  ]) {
+    const store = new FakeConversationStore();
+    const conversation = await store.create();
+    await store.append(conversation.id, "user", "old ".repeat(20));
+    await store.append(conversation.id, "assistant", "middle ".repeat(10));
+    await store.append(conversation.id, "user", "recent");
+
+    const memoryStore = new FakeMemoryStore();
+    memoryStore.result = [
+      fakeMemory("low", "low fact"),
+      fakeMemory("medium", "medium fact"),
+      fakeMemory("high", "high fact"),
+    ];
+    const calls: string[] = [];
+    const { server, url } = await startServer(createApp({
+      contextBudget,
+      conversationStore: store,
+      memoryStore,
+      reflectionDecorator: (strategy) => ({
+        name: `reflect:${strategy.name}`,
+        run: (input, options) => strategy.run(input, options),
+      }),
+      strategies: { [strategyName]: fakeStrategy(strategyName, calls) },
+    }));
+
+    try {
+      const response = await fetch(`${url}/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "Check incident state",
+          userId: "operator-1",
+          conversationId: conversation.id,
+          strategy: strategyName,
+          reflact,
+        }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(
+        calls[0],
+        `${expectedMemories}\n${expectedHistory}\nUser: Check incident state`,
+      );
+      const persisted = await store.lastMessages(conversation.id, 2);
+      assert.equal(
+        persisted?.find(({ role }) => role === "user")?.content,
+        "Check incident state",
+      );
+    } finally {
+      await closeServer(server);
+    }
+  }
+});
+
+test("createApp rejects invalid CONTEXT_BUDGET configuration explicitly", () => {
+  assert.throws(
+    () => createApp({ env: { CONTEXT_BUDGET: '{"history":-1}' } }),
+    ContextBudgetConfigurationError,
+  );
 });
 
 test("POST /chat passes the validated userId as strategy context", async (t) => {

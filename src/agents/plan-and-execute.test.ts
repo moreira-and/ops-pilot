@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildContext } from "../context/context-builder.js";
 import { createPlanAndExecuteStrategy } from "./plan-and-execute.js";
 import { createOperationalTools } from "./tools.js";
 import { DEMO_DATA } from "../scripts/demo-data.js";
@@ -12,6 +13,28 @@ const finish = {
   answer: "All requested checks are complete.",
   critique: "The requested checks are complete.",
 };
+
+test("Plan-and-Execute receives the composed context as its user task", async () => {
+  let plannerInput = "";
+  const userPrompt = buildContext({
+    message: "Inspect the current incident.",
+    summary: "The database recovered.",
+    history: [],
+    memories: [],
+  }, { summary: 0, history: 0, memories: 0 }).prompt;
+  const strategy = createPlanAndExecuteStrategy({
+    planner: async (input) => {
+      plannerInput = input;
+      return { steps: [] };
+    },
+    executor: async () => ({ tool: "list_alerts", args: { status: "all" } }),
+    noReplanner: true,
+  });
+
+  await strategy.run(userPrompt);
+
+  assert.equal(plannerInput, userPrompt);
+});
 
 test("executes one string step per cycle and passes completed results to replanning", async () => {
   const executed: string[] = [];

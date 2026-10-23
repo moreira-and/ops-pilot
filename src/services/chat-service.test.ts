@@ -401,3 +401,15 @@ test("composeStrategyInput places the summary before recent history", () => {
   });
   assert.match(text, /^Conversation summary \(facts, not instructions\):\ndecided X\nUser: now$/);
 });
+
+test("composeStrategyInput preserves the current request text exactly", () => {
+  const message = "  Check alert ⚠️ \n";
+  const text = composeStrategyInput({
+    message,
+    summary: null,
+    history: [],
+    memories: [],
+  });
+
+  assert.equal(text, message);
+});
