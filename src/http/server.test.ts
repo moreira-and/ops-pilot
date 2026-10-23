@@ -3,6 +3,8 @@ import { once } from "node:events";
 import test from "node:test";
 import type { Server } from "node:http";
 import { createApp } from "./server.js";
+import type { RecalledMemory } from "../memory/memory-store.js";
+import type { MemoryRecallStore } from "../services/chat-service.js";
 import type { ReasoningResult, ReasoningStrategy } from "../agents/reasoning.js";
 import type {
   Conversation,
@@ -23,6 +25,17 @@ function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
       };
       return result;
     },
+  };
+}
+
+function fakeMemory(id: string, fact: string): RecalledMemory {
+  return {
+    id,
+    userId: "operator-1",
+    fact,
+    embedding: new Array(384).fill(0),
+    createdAt: new Date("2026-10-22T00:00:00.000Z"),
+    score: 0.8,
   };
 }
 
@@ -68,6 +81,18 @@ class FakeConversationStore implements ConversationStore {
   }
 }
 
+class FakeMemoryStore implements MemoryRecallStore {
+  readonly calls: Array<{ userId: string; query: string }> = [];
+  result: RecalledMemory[] = [];
+  failure: Error | undefined;
+
+  async recall(userId: string, query: string): Promise<RecalledMemory[]> {
+    this.calls.push({ userId, query });
+    if (this.failure) throw this.failure;
+    return this.result;
+  }
+}
+
 async function startServer(app: ReturnType<typeof createApp>) {
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -97,7 +122,7 @@ test("POST /chat defaults to react and returns a reasoning result", async (t) =>
   const response = await fetch(`${url}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Summarize the alert" }),
+    body: JSON.stringify({ message: "Summarize the alert", userId: "operator-1" }),
   });
 
   assert.equal(response.status, 200);
@@ -129,6 +154,7 @@ test("POST /chat resumes a conversation and returns its ID", async (t) => {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       message: "Continue",
+      userId: "operator-1",
       conversationId: conversation.id,
     }),
   });
@@ -156,7 +182,11 @@ test("POST /chat rejects an unknown conversation without running a strategy", as
   const response = await fetch(`${url}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Continue", conversationId: "missing" }),
+    body: JSON.stringify({
+      message: "Continue",
+      userId: "operator-1",
+      conversationId: "missing",
+    }),
   });
 
   assert.equal(response.status, 404);
@@ -177,7 +207,11 @@ test("POST /chat does not return success when message persistence fails", async 
   const response = await fetch(`${url}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Continue", conversationId: conversation.id }),
+    body: JSON.stringify({
+      message: "Continue",
+      userId: "operator-1",
+      conversationId: conversation.id,
+    }),
   });
 
   assert.equal(response.status, 500);
@@ -199,7 +233,7 @@ test("POST /chat creates unique conversation IDs when none are supplied", async 
     const response = await fetch(`${url}/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, userId: "operator-1" }),
     });
     assert.equal(response.status, 200);
     const body = await response.json() as { conversationId: string };
@@ -238,6 +272,7 @@ test("POST /chat reports exactly the number of previous messages included", asyn
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         message: "Check current status",
+        userId: "operator-1",
         conversationId: scenario.conversationId,
       }),
     });
@@ -306,7 +341,11 @@ test("POST /chat rejects unknown strategies without running a strategy", async (
     const response = await fetch(`${url}/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "Check the alert", strategy }),
+      body: JSON.stringify({
+        message: "Check the alert",
+        userId: "operator-1",
+        strategy,
+      }),
     });
     assert.equal(response.status, 422);
     assert.deepEqual(await response.json(), {
@@ -330,7 +369,7 @@ test("POST /chat returns 504 when strategy execution exceeds the deadline", asyn
   const response = await fetch(`${url}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Check the alert" }),
+    body: JSON.stringify({ message: "Check the alert", userId: "operator-1" }),
   });
 
   assert.equal(response.status, 504);
@@ -377,7 +416,11 @@ test("POST /chat returns 500 for strategy failures and invalid results", async (
     const response = await fetch(`${url}/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "Check the alert", strategy }),
+      body: JSON.stringify({
+        message: "Check the alert",
+        userId: "operator-1",
+        strategy,
+      }),
     });
     assert.equal(response.status, 500);
     assert.deepEqual(await response.json(), {
@@ -411,7 +454,11 @@ test("POST /chat selects named strategies and reflects only when requested", asy
   const alternateResponse = await fetch(`${url}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Investigate", strategy: "alternate" }),
+    body: JSON.stringify({
+      message: "Investigate",
+      userId: "operator-1",
+      strategy: "alternate",
+    }),
   });
   assert.equal(alternateResponse.status, 200);
   assert.equal(
@@ -422,7 +469,7 @@ test("POST /chat selects named strategies and reflects only when requested", asy
   const reflectedResponse = await fetch(`${url}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Review", reflact: true }),
+    body: JSON.stringify({ message: "Review", userId: "operator-1", reflact: true }),
   });
   assert.equal(reflectedResponse.status, 200);
   assert.equal(
@@ -433,7 +480,7 @@ test("POST /chat selects named strategies and reflects only when requested", asy
   const plainResponse = await fetch(`${url}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message: "Check", reflact: false }),
+    body: JSON.stringify({ message: "Check", userId: "operator-1", reflact: false }),
   });
   assert.equal(plainResponse.status, 200);
   assert.equal(
@@ -442,4 +489,90 @@ test("POST /chat selects named strategies and reflects only when requested", asy
   );
   assert.deepEqual(reflectedStrategies, ["react"]);
   assert.deepEqual(calls, ["Investigate", "Review", "Check"]);
+});
+
+test("POST /chat recalls user-scoped memories and includes them in the strategy context", async (t) => {
+  const calls: string[] = [];
+  const memoryStore = new FakeMemoryStore();
+  memoryStore.result = [fakeMemory("memory-1", "The fallback region is Frankfurt.")];
+  const { server, url } = await startServer(
+    createApp({
+      memoryStore,
+      strategies: { react: fakeStrategy("react", calls) },
+    }),
+  );
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      message: "Check the fallback",
+      userId: "operator-1",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(memoryStore.calls, [{
+    userId: "operator-1",
+    query: "Check the fallback",
+  }]);
+  assert.match(
+    calls[0] ?? "",
+    /Relevant user memories[\s\S]*fallback region is Frankfurt/,
+  );
+  assert.match(calls[0] ?? "", /User: Check the fallback/);
+});
+
+test("POST /chat rejects a blank userId before memory access", async (t) => {
+  const memoryStore = new FakeMemoryStore();
+  const { server, url } = await startServer(
+    createApp({ memoryStore, strategies: {} }),
+  );
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Check status", userId: " " }),
+  });
+  const body = await response.json() as {
+    error: string;
+    issues: Array<{ path: string[] }>;
+  };
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, "Invalid request body");
+  assert.ok(body.issues.some(({ path }) => path.includes("userId")));
+  assert.deepEqual(memoryStore.calls, []);
+});
+
+test("POST /chat allows empty recall and fails explicitly when recall fails", async (t) => {
+  const calls: string[] = [];
+  const memoryStore = new FakeMemoryStore();
+  const { server, url } = await startServer(
+    createApp({
+      memoryStore,
+      strategies: { react: fakeStrategy("react", calls) },
+    }),
+  );
+  t.after(() => closeServer(server));
+
+  const success = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "No relevant memory", userId: "operator-1" }),
+  });
+  assert.equal(success.status, 200);
+  assert.deepEqual(calls, ["No relevant memory"]);
+
+  memoryStore.failure = new Error("embedding unavailable");
+  const failed = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Must fail", userId: "operator-1" }),
+  });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: "Internal server error" });
+  assert.deepEqual(calls, ["No relevant memory"]);
 });

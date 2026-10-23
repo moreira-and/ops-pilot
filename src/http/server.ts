@@ -11,6 +11,7 @@ import {
   ChatStrategyFailedError,
   composeStrategyInput,
   createChatService,
+  type MemoryRecallStore,
 } from "../services/chat-service.js";
 import type { ConversationStore } from "../services/conversation-store.js";
 import { ConversationNotFoundError } from "../services/domain-error.js";
@@ -18,6 +19,7 @@ import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
 
 const chatRequestSchema = z.object({
   message: z.string().trim().min(1),
+  userId: z.string().trim().min(1),
   strategy: z.string().trim().min(1).default("react"),
   reflact: z.boolean().default(false),
   conversationId: z.string().trim().min(1).optional(),
@@ -36,6 +38,7 @@ export interface ChatServerOptions {
   strategies?: Record<string, ReasoningStrategy>;
   reflectionDecorator?: (strategy: ReasoningStrategy) => ReasoningStrategy;
   conversationStore?: ConversationStore;
+  memoryStore?: MemoryRecallStore;
   timeoutMs?: number;
 }
 
@@ -88,7 +91,10 @@ export function createApp(options: ChatServerOptions = {}): Express {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const conversationStore = options.conversationStore ??
     new SqliteConversationStore(":memory:");
-  const chatService = createChatService(conversationStore);
+  const chatService = createChatService(
+    conversationStore,
+    options.memoryStore,
+  );
   const app = express();
 
   app.use(express.json());
@@ -118,6 +124,7 @@ export function createApp(options: ChatServerOptions = {}): Express {
       const result = await chatService.runChat(
         {
           message: parsed.data.message,
+          userId: parsed.data.userId,
           conversationId: parsed.data.conversationId,
         },
         {

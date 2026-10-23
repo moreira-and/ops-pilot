@@ -74,6 +74,7 @@ test("runChat passes 12 chronological messages and persists the user and assista
   const strategyInputs: Array<{
     message: string;
     history: ConversationMessage[];
+    memories: Array<{ fact: string; score: number }>;
   }> = [];
   const strategy: ChatStrategy = {
     async run(input) {
@@ -86,6 +87,7 @@ test("runChat passes 12 chronological messages and persists the user and assista
 
   const result = await service.runChat({
     message: "Check current status",
+    userId: "operator-1",
     conversationId: store.conversation.id,
   }, strategy);
 
@@ -95,6 +97,7 @@ test("runChat passes 12 chronological messages and persists the user and assista
     Array.from({ length: 12 }, (_unused, index) => index + 3),
   );
   assert.equal(strategyInputs[0]?.message, "Check current status");
+  assert.deepEqual(strategyInputs[0]?.memories, []);
   assert.deepEqual(
     store.appends.map(({ role, content }) => ({ role, content })),
     [
@@ -116,6 +119,7 @@ test("runChat rejects an unknown conversation before appending or invoking the s
   await assert.rejects(
     createChatService(store).runChat({
       message: "Continue",
+      userId: "operator-1",
       conversationId: "missing",
     }, strategy),
     ConversationNotFoundError,
@@ -134,6 +138,7 @@ test("runChat does not append an assistant answer for failed reasoning results",
   await assert.rejects(
     createChatService(store).runChat({
       message: "Check status",
+      userId: "operator-1",
       conversationId: store.conversation.id,
     }, strategy),
     ChatStrategyFailedError,
