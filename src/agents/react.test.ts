@@ -3,16 +3,19 @@ import test from "node:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
 import { ModelCallCounter } from "./metrics.js";
-import { createReactStrategy } from "./react.js";
+import { createReactStrategy, MEMORY_CAPABILITY_PROMPT } from "./react.js";
 
 test("ReAct returns a typed ordered action/observation/answer trace", async () => {
   let recursionLimit = 0;
+  let runtimeUserId = "";
   const strategy = createReactStrategy({
     tools: [],
     modelFactory: () => new ChatOpenAI({ model: "test/model" }),
     agentFactory: () => ({
       invoke: async (_input, config) => {
         recursionLimit = config?.recursionLimit ?? 0;
+        runtimeUserId = (config as { context?: { userId?: string } } | undefined)
+          ?.context?.userId ?? "";
         if (Array.isArray(config?.callbacks)) {
           for (const callback of config.callbacks) {
             if (callback instanceof ModelCallCounter) {
@@ -44,9 +47,13 @@ test("ReAct returns a typed ordered action/observation/answer trace", async () =
     }),
   });
 
-  const result = await strategy.run("List alerts", { maxIterations: 3 });
+  const result = await strategy.run("List alerts", {
+    maxIterations: 3,
+    userId: "operator-1",
+  });
   assert.equal(result.answer, "No firing alerts.");
   assert.equal(recursionLimit, 7);
+  assert.equal(runtimeUserId, "operator-1");
   assert.equal(result.metrics.llmCalls, 2);
   assert.deepEqual(
     result.trace.map(({ type }) => type),
@@ -67,6 +74,36 @@ test("ReAct reports invalid user input before invoking the agent", async () => {
   });
   await assert.rejects(strategy.run("  "));
   assert.equal(invoked, false);
+});
+
+test("ReAct exposes forget_preference with trusted request context", async () => {
+  let toolNames: string[] = [];
+  let contextUserId = "";
+  let systemPrompt = "";
+  const strategy = createReactStrategy({
+    tools: [],
+    memoryStore: {
+      async recall() { return []; },
+      forget() { return false; },
+    },
+    modelFactory: () => new ChatOpenAI({ model: "test/model" }),
+    agentFactory: (_model, tools, options) => {
+      toolNames = tools.map(({ name }) => name);
+      systemPrompt = options.prompt;
+      return {
+        async invoke(_input, config) {
+          contextUserId = config?.context?.userId ?? "";
+          return { messages: [new AIMessage("Done.")] };
+        },
+      };
+    },
+  });
+
+  await strategy.run("Forget my email preference.", { userId: "operator-1" });
+  assert.deepEqual(toolNames, ["forget_preference"]);
+  assert.equal(contextUserId, "operator-1");
+  assert.equal(systemPrompt, MEMORY_CAPABILITY_PROMPT);
+  assert.match(systemPrompt, /nunca afirme que uma preferência já foi salva/i);
 });
 
 test("ReAct returns explicit failure trace and metrics when graph execution fails", async () => {

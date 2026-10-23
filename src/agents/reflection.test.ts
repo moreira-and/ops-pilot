@@ -84,6 +84,36 @@ test("returns the initial answer without regeneration when the critic approves",
   assert.equal(response.trace.filter(({ type }) => type === "critique").length, 1);
 });
 
+test("reflection preserves trusted request context for each strategy invocation", async () => {
+  const received: Array<{ input: string; userId?: string }> = [];
+  const strategy: ReasoningStrategy = {
+    name: "context-strategy",
+    async run(input, options) {
+      received.push({ input, userId: options?.userId });
+      return result("Answer.");
+    },
+  };
+  const wrapped = withReflection(
+    strategy,
+    { maxReflections: 1 },
+    {
+      critique: countingCritic([
+        { approved: false, feedback: "Revise." },
+        { approved: true, feedback: "" },
+      ]),
+    },
+  );
+
+  await wrapped.run("Question", { userId: "operator-1" });
+  assert.deepEqual(received, [
+    { input: "Question", userId: "operator-1" },
+    {
+      input: "Question\n\nFeedback da reflexão anterior (resposta reprovada):\nRevise.",
+      userId: "operator-1",
+    },
+  ]);
+});
+
 test("reruns the complete strategy with the original request and rejection feedback", async () => {
   const received: string[] = [];
   const wrapped = withReflection(

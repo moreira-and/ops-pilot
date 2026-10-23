@@ -145,3 +145,69 @@ test("runChat does not append an assistant answer for failed reasoning results",
   );
   assert.deepEqual(store.appends.map(({ role }) => role), ["user"]);
 });
+
+test("runChat schedules learning after a successful response without awaiting it", async () => {
+  const store = new FakeConversationStore();
+  let finishLearning!: () => void;
+  const pendingLearning = new Promise<void>((resolve) => {
+    finishLearning = resolve;
+  });
+  const scheduled: Array<{ userId: string; message: string }> = [];
+  const strategyOptions: Array<{ userId?: string }> = [];
+  const service = createChatService(
+    store,
+    undefined,
+    {
+      async learn(userId, message) {
+        scheduled.push({ userId, message });
+        await pendingLearning;
+      },
+    },
+    { error: assert.fail },
+  );
+  const strategy: ChatStrategy = {
+    async run(_input, options) {
+      strategyOptions.push(options ?? {});
+      return fakeResult();
+    },
+  };
+
+  const result = await service.runChat({
+    message: "I prefer alerts by email.",
+    userId: "operator-1",
+  }, strategy);
+  assert.equal(result.answer, "The alert is mitigated.");
+  assert.deepEqual(strategyOptions, [{ userId: "operator-1" }]);
+  assert.deepEqual(store.appends.map(({ role }) => role), ["user", "assistant"]);
+
+  await Promise.resolve();
+  assert.deepEqual(scheduled, [{
+    userId: "operator-1",
+    message: "I prefer alerts by email.",
+  }]);
+  finishLearning();
+});
+
+test("runChat logs sanitized learning failure without changing the answer", async () => {
+  const store = new FakeConversationStore();
+  const logged: unknown[][] = [];
+  const service = createChatService(
+    store,
+    undefined,
+    { async learn() { throw new Error("private source message"); } },
+    { error(...details: unknown[]) { logged.push(details); } },
+  );
+  const result = await service.runChat({
+    message: "I prefer alerts by email.",
+    userId: "operator-1",
+  }, { async run() { return fakeResult(); } });
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(result.answer, "The alert is mitigated.");
+  assert.equal(logged.length, 1);
+  assert.deepEqual(logged[0], [
+    "Asynchronous memory learning failed.",
+    { errorName: "Error" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(logged), /private source message/);
+});

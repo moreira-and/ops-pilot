@@ -4,6 +4,7 @@ export const reasoningInputSchema = z.string().trim().min(1);
 
 export const reasoningOptionsSchema = z.object({
   maxIterations: z.number().int().safe().positive().default(8),
+  userId: z.string().trim().min(1).optional(),
 });
 
 export const severitySchema = z.enum(["critical", "high", "medium", "low"]);

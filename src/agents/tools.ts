@@ -1,7 +1,12 @@
 import { tool } from "@langchain/core/tools";
+import type { ToolRuntime } from "@langchain/core/tools";
 import { AlertService } from "../services/alert-service.js";
 import { IncidentService } from "../services/incident-service.js";
 import type { OperationalStore } from "../services/operational-store.js";
+import {
+  createPreferenceForgetService,
+  type PreferenceMemoryStore,
+} from "../services/preference-forget-service.js";
 import { RunbookService, runbookLookupResultSchema } from "../services/runbook-service.js";
 import { SqliteOpsStore } from "../store/sqlite-ops-store.js";
 import { DEMO_DATA } from "../scripts/demo-data.js";
@@ -11,6 +16,58 @@ import {
   alertRecordSchema,
   incidentRecordSchema,
 } from "../services/operational-store.js";
+
+export const forgetPreferenceInputSchema = z.object({
+  preference: z.string().trim().min(1).max(500).describe(
+    "Descrição da preferência que deve ser esquecida; não inclua userId ou identificadores internos.",
+  ),
+}).strict();
+const forgetPreferenceContextSchema = z.object({
+  userId: z.string().trim().min(1),
+}).strict();
+const forgetPreferenceOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("deleted"), preference: z.string().min(1) }),
+  z.object({ status: z.literal("not_found") }),
+  z.object({
+    status: z.literal("ambiguous"),
+    candidates: z.array(z.string().min(1)).min(2).max(3),
+  }),
+]);
+
+export function createForgetPreferenceTool(memoryStore: PreferenceMemoryStore) {
+  return tool(
+    async (
+      input,
+      runtime: ToolRuntime<unknown, z.infer<typeof forgetPreferenceContextSchema>>,
+    ) => {
+      return runForgetPreferenceTool(memoryStore, input, runtime.context);
+    },
+    {
+      name: "forget_preference",
+      description:
+        "Remove uma preferência durável que a pessoa pediu explicitamente para esquecer. " +
+        "Use somente para pedidos de esquecimento; preference descreve o fato a remover. " +
+        "Se o resultado for ambiguous, pergunte qual opção deve ser removida. " +
+        "Se for not_found, informe que nenhuma preferência correspondente foi encontrada. " +
+        "Só confirme remoção quando status for deleted; não invente resultados.",
+      schema: forgetPreferenceInputSchema,
+    },
+  );
+}
+
+export async function runForgetPreferenceTool(
+  memoryStore: PreferenceMemoryStore,
+  inputValue: unknown,
+  contextValue: unknown,
+): Promise<string> {
+  const { preference } = forgetPreferenceInputSchema.parse(inputValue);
+  const { userId } = forgetPreferenceContextSchema.parse(contextValue);
+  const service = createPreferenceForgetService(memoryStore);
+  const outcome = forgetPreferenceOutcomeSchema.parse(
+    await service.forget(userId, preference),
+  );
+  return JSON.stringify(outcome);
+}
 
 const alertStatus = z.enum(["firing", "resolved", "all"])
   .default("firing")

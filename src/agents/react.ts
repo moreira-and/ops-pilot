@@ -20,7 +20,11 @@ import {
   type ReasoningStrategy,
   type TraceEvent,
 } from "./reasoning.js";
-import { getDefaultOperationalTools } from "./tools.js";
+import {
+  createForgetPreferenceTool,
+  getDefaultOperationalTools,
+} from "./tools.js";
+import type { PreferenceMemoryStore } from "../services/preference-forget-service.js";
 import { DomainError } from "../services/domain-error.js";
 import { DatabaseConfigurationError } from "../models/database.js";
 import { ModelConfigurationError } from "./model.js";
@@ -35,16 +39,31 @@ type TraceEventInput = TraceEvent extends infer Event
 interface ReactAgentInvoker {
   invoke(
     input: { messages: BaseMessageLike[] },
-    config?: RunnableConfig,
+    config?: RunnableConfig & { context?: { userId: string } },
   ): Promise<unknown>;
 }
 
+const reactContextSchema = z.object({
+  userId: z.string().trim().min(1),
+});
+
+export const MEMORY_CAPABILITY_PROMPT =
+  "O OpsPilot avalia automaticamente a mensagem mais recente após uma resposta " +
+  "bem-sucedida para aprender fatos duradouros e seguros para conversas futuras. " +
+  "Não diga que é incapaz de registrar ou aprender preferências. Esse aprendizado " +
+  "ocorre em segundo plano e você não recebe confirmação de sua conclusão nesta " +
+  "resposta; portanto, nunca afirme que uma preferência já foi salva. Se a pessoa " +
+  "pedir para esquecer uma preferência, use forget_preference e só confirme a " +
+  "remoção quando a ferramenta retornar status deleted.";
+
 export interface ReactStrategyDependencies {
   tools?: StructuredToolInterface[];
+  memoryStore?: PreferenceMemoryStore;
   modelFactory?: typeof createModel;
   agentFactory?: (
     model: ReturnType<typeof createModel>,
     tools: StructuredToolInterface[],
+    options: { contextSchema: typeof reactContextSchema; prompt: string },
   ) => ReactAgentInvoker;
 }
 
@@ -158,23 +177,35 @@ export function createReactStrategy(
   const modelFactory = dependencies.modelFactory ?? createModel;
   const agentFactory =
     dependencies.agentFactory ??
-    ((model, availableTools) =>
-      createReactAgent({ llm: model, tools: availableTools }));
+    ((model, availableTools, options) =>
+      createReactAgent({
+        llm: model,
+        tools: availableTools,
+        ...options,
+      }));
 
   return {
     name: "react",
     async run(input: string, options?: ReasoningOptions) {
       const parsedInput = reasoningInputSchema.parse(input);
-      const { maxIterations } = reasoningOptionsSchema.parse(options ?? {});
+      const { maxIterations, userId } = reasoningOptionsSchema.parse(options ?? {});
       const elapsed = startTimer();
       const counter = new ModelCallCounter();
       try {
         const tools = dependencies.tools ??
           (defaultTools ??= Object.values(getDefaultOperationalTools()));
-        const agent = agentFactory(modelFactory(), tools);
+        const availableTools = dependencies.memoryStore &&
+            !tools.some(({ name }) => name === "forget_preference")
+          ? [...tools, createForgetPreferenceTool(dependencies.memoryStore)]
+          : tools;
+        const agent = agentFactory(modelFactory(), availableTools, {
+          contextSchema: reactContextSchema,
+          prompt: MEMORY_CAPABILITY_PROMPT,
+        });
         const state = await agent.invoke(
           { messages: [new HumanMessage(parsedInput)] },
           {
+            ...(userId ? { context: { userId } } : {}),
             recursionLimit: maxIterations * 2 + 1,
             callbacks: [counter],
           },

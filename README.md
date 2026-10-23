@@ -66,11 +66,41 @@ Envie uma mensagem para `POST /chat`. A estratégia padrão é `react`; a altern
 ```sh
 curl -s http://localhost:3000/chat \
   -H 'content-type: application/json' \
-  -d '{"message":"abra um incidente sev2 para o catalog","strategy":"react"}' \
+  -d '{"userId":"operador-demo","message":"abra um incidente sev2 para o catalog","strategy":"react"}' \
   | jq '{answer, llmCalls: .metrics.llmCalls}'
 ```
 
 Uma resposta bem-sucedida contém `answer`, `trace` e `metrics`. Requisições inválidas retornam `400`, estratégias desconhecidas retornam `422` e a execução pode retornar `504` ao exceder o limite de 180 segundos.
+
+### Testar memória semântica
+
+O chat avalia a última mensagem do usuário depois de uma resposta bem-sucedida e tenta guardar fatos duráveis em segundo plano, preservando o idioma original. Use o mesmo `userId` nas chamadas. A primeira extração pode demorar mais enquanto o modelo é carregado; acompanhe o terminal do servidor e aguarde `Durable user memory learned.` antes de enviar a pergunta de recall. Esse log aparece somente após a gravação bem-sucedida; a resposta inicial não confirma que a lembrança já foi gravada.
+
+1. Declare uma preferência duradoura:
+
+   ```sh
+   curl -sS -X POST http://localhost:3000/chat \
+     -H 'content-type: application/json' \
+     -d '{"userId":"operador-demo","message":"Uma preferência minha: quero receber atualizações de incidentes por e-mail."}'
+   ```
+
+2. Pergunte usando outra formulação; a resposta deve considerar a preferência aprendida:
+
+   ```sh
+   curl -sS -X POST http://localhost:3000/chat \
+     -H 'content-type: application/json' \
+     -d '{"userId":"operador-demo","message":"Qual canal prefiro para receber atualizações sobre incidentes?"}'
+   ```
+
+3. Peça para esquecer a preferência. O agente só deve confirmar a remoção se a ferramenta encontrar e apagar uma lembrança correspondente sem ambiguidade:
+
+   ```sh
+   curl -sS -X POST http://localhost:3000/chat \
+     -H 'content-type: application/json' \
+     -d '{"userId":"operador-demo","message":"Esqueça minha preferência por receber atualizações de incidentes por e-mail."}'
+   ```
+
+Repita a pergunta do segundo comando para verificar que a preferência esquecida deixou de influenciar o chat. O endpoint não retorna os registros de memória na resposta; esse teste verifica seu uso pelo contexto das respostas.
 
 ### Arena de estratégias
 

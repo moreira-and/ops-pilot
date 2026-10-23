@@ -1,9 +1,13 @@
 import { z } from "zod";
-import { createPlanAndExecuteStrategy } from "./agents/plan-and-execute.js";
+import {
+  createPlanAndExecuteStrategy,
+  type ExecutorOutput,
+} from "./agents/plan-and-execute.js";
 import { createReactStrategy } from "./agents/react.js";
 import type { ReasoningStrategy } from "./agents/reasoning.js";
 import {
   createOperationalTools,
+  forgetPreferenceInputSchema,
   listAlertsInputSchema,
   listIncidentsInputSchema,
   consultarRunbookInputSchema,
@@ -69,11 +73,12 @@ type ToolInputs = {
   consultar_runbook: z.infer<typeof consultarRunbookInputSchema>;
   open_incident: z.infer<typeof openIncidentInputSchema>;
   resolve_incident: z.infer<typeof resolveIncidentInputSchema>;
+  forget_preference: z.infer<typeof forgetPreferenceInputSchema>;
 };
 
 async function executeOperationalTool(
   tools: ReturnType<typeof createOperationalTools>,
-  name: keyof ToolInputs,
+  name: keyof ToolInputs | ExecutorOutput["tool"],
   input: Record<string, unknown>,
 ): Promise<string> {
   switch (name) {
@@ -99,6 +104,8 @@ async function executeOperationalTool(
       return String(
         await tools.resolveIncident.invoke(resolveIncidentInputSchema.parse(input)),
       );
+    case "forget_preference":
+      throw new Error("Preference forgetting is unavailable in benchmark scenarios.");
   }
 }
 

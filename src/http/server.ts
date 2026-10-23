@@ -11,6 +11,7 @@ import {
   ChatStrategyFailedError,
   composeStrategyInput,
   createChatService,
+  type ChatLearningService,
   type MemoryRecallStore,
 } from "../services/chat-service.js";
 import type { ConversationStore } from "../services/conversation-store.js";
@@ -39,6 +40,7 @@ export interface ChatServerOptions {
   reflectionDecorator?: (strategy: ReasoningStrategy) => ReasoningStrategy;
   conversationStore?: ConversationStore;
   memoryStore?: MemoryRecallStore;
+  learningService?: ChatLearningService;
   timeoutMs?: number;
 }
 
@@ -94,6 +96,7 @@ export function createApp(options: ChatServerOptions = {}): Express {
   const chatService = createChatService(
     conversationStore,
     options.memoryStore,
+    options.learningService,
   );
   const app = express();
 
@@ -128,9 +131,9 @@ export function createApp(options: ChatServerOptions = {}): Express {
           conversationId: parsed.data.conversationId,
         },
         {
-          run: (input) =>
+          run: (input, strategyOptions) =>
             runWithTimeout(
-              strategy.run(composeStrategyInput(input)),
+              strategy.run(composeStrategyInput(input), strategyOptions),
               timeoutMs,
             ),
         },

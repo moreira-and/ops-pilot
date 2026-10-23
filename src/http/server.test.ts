@@ -136,6 +136,37 @@ test("POST /chat defaults to react and returns a reasoning result", async (t) =>
   assert.deepEqual(calls, ["Summarize the alert"]);
 });
 
+test("POST /chat passes the validated userId as strategy context", async (t) => {
+  let receivedUserId = "";
+  const strategy: ReasoningStrategy = {
+    name: "react",
+    async run(_input, options) {
+      receivedUserId = options?.userId ?? "";
+      return {
+        answer: "Done.",
+        trace: [{ sequence: 0, type: "answer", content: "Done." }],
+        metrics: { llmCalls: 1, latencyMs: 1 },
+      };
+    },
+  };
+  const { server, url } = await startServer(
+    createApp({ strategies: { react: strategy } }),
+  );
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      message: "Please forget my email preference.",
+      userId: "operator-1",
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(receivedUserId, "operator-1");
+});
+
 test("POST /chat resumes a conversation and returns its ID", async (t) => {
   const store = new FakeConversationStore();
   const conversation = await store.create();

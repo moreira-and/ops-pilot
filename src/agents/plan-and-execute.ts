@@ -18,9 +18,14 @@ import {
   openIncidentInputSchema,
   getDefaultOperationalTools,
   consultarRunbookInputSchema,
+  forgetPreferenceInputSchema,
   resolveIncidentInputSchema,
 } from "./tools.js";
 import { redactToolArgs } from "./trace.js";
+import {
+  createPreferenceForgetService,
+  type PreferenceMemoryStore,
+} from "../services/preference-forget-service.js";
 
 export const planSchema = z.object({
   steps: z.array(z.string().trim().min(1)).max(8).describe(
@@ -35,6 +40,7 @@ export const executorSchema = z.object({
     "resolve_incident",
     "list_incidents",
     "consultar_runbook",
+    "forget_preference",
   ]),
   args: z.record(z.string(), z.unknown()),
 });
@@ -47,13 +53,27 @@ export const replannerSchema = z.object({
 });
 
 export const PLANNER_PROMPT =
-  "Crie um plano operacional curto e ordenado para atender ao pedido. Use apenas operações disponíveis: listar alertas por status (firing, resolved ou all), abrir, listar ou resolver incidentes, e consultar o runbook de um serviço. Retorne no máximo oito passos como instruções simples. Se nenhuma ação for necessária, retorne uma lista vazia.";
+  "O OpsPilot avalia automaticamente a mensagem mais recente após uma resposta " +
+  "bem-sucedida para aprender fatos duradouros e seguros. Não diga que é incapaz " +
+  "de registrar preferências nem afirme que já foram salvas, pois o aprendizado " +
+  "acontece em segundo plano sem confirmação nesta resposta. " +
+  "Crie um plano operacional curto e ordenado para atender ao pedido. Use apenas " +
+  "operações disponíveis: listar alertas por status (firing, resolved ou all), " +
+  "abrir, listar ou resolver incidentes, consultar o runbook de um serviço, ou " +
+  "esquecer uma preferência que o usuário pediu para esquecer. Retorne no máximo " +
+  "oito passos como instruções simples. Se nenhuma ação for necessária, retorne " +
+  "uma lista vazia.";
 
 const EXECUTOR_PROMPT =
-  "Escolha uma única ferramenta operacional e seus argumentos para executar exatamente o passo atual. Use list_alerts com status firing, resolved ou all; open_incident com title, service e severity (critical/high/medium/low ou sev1/sev2/sev3/sev4, em que sev1=critical, sev2=high, sev3=medium e sev4=low); resolve_incident com id; list_incidents com status open, resolved ou all (padrão open); ou consultar_runbook com service. Não invente dados ausentes: escolha a ação mais segura e informe falhas pela ferramenta quando aplicável.";
+  "Escolha uma única ferramenta operacional e seus argumentos para executar exatamente o passo atual. Use list_alerts com status firing, resolved ou all; open_incident com title, service e severity (critical/high/medium/low ou sev1/sev2/sev3/sev4, em que sev1=critical, sev2=high, sev3=medium e sev4=low); resolve_incident com id; list_incidents com status open, resolved ou all (padrão open); consultar_runbook com service; ou forget_preference com preference descrevendo a preferência a esquecer. Nunca forneça userId: a identidade do solicitante é fornecida fora dos argumentos. Não invente dados ausentes: escolha a ação mais segura e informe falhas pela ferramenta quando aplicável.";
 
 const REPLANNER_PROMPT =
-  "Revise o pedido, o plano restante e os resultados concluídos. Decida se deve ajustar (adjust) os passos restantes, seguir o plano (continue), ou encerrar (finish). Nunca repita um passo concluído nem proponha mais do que oito passos no total. Ao encerrar, forneça uma resposta concisa baseada nos resultados.";
+  "Revise o pedido, o plano restante e os resultados concluídos. Não afirme que " +
+  "uma preferência foi aprendida ou salva: o aprendizado acontece em segundo " +
+  "plano e não confirma sua conclusão nesta resposta. Decida se deve ajustar " +
+  "(adjust) os passos restantes, seguir o plano (continue), ou encerrar (finish). " +
+  "Nunca repita um passo concluído nem proponha mais do que oito passos no total. " +
+  "Ao encerrar, forneça uma resposta concisa baseada nos resultados.";
 
 export type PlanStep = string;
 export type DoneStep = [step: string, result: string];
@@ -74,6 +94,7 @@ export interface PlanAndExecuteDependencies {
   replanner?: (context: PlanReviewInput) => Promise<ReplannerOutput>;
   noReplanner?: boolean;
   operationalTools?: ReturnType<typeof getDefaultOperationalTools>;
+  memoryStore?: PreferenceMemoryStore;
   toolExecutor?: (
     tool: ExecutorOutput["tool"],
     args: Record<string, unknown>,
@@ -154,6 +175,8 @@ function executeTool(
   tool: ExecutorOutput["tool"],
   args: Record<string, unknown>,
   opsTools: ReturnType<typeof getDefaultOperationalTools>,
+  memoryStore?: PreferenceMemoryStore,
+  userId?: string,
 ): Promise<unknown> {
   switch (tool) {
     case "list_alerts":
@@ -166,6 +189,15 @@ function executeTool(
       return opsTools.listIncidents.invoke(listIncidentsInputSchema.parse(args));
     case "consultar_runbook":
       return opsTools.consultarRunbook.invoke(consultarRunbookInputSchema.parse(args));
+    case "forget_preference": {
+      if (!memoryStore || !userId) {
+        throw new Error("Preference forgetting is unavailable for this request.");
+      }
+      const { preference } = forgetPreferenceInputSchema.parse(args);
+      return createPreferenceForgetService(memoryStore)
+        .forget(userId, preference)
+        .then((outcome) => JSON.stringify(outcome));
+    }
   }
 }
 
@@ -176,7 +208,7 @@ export function createPlanAndExecuteStrategy(
     name: "plan-and-execute",
     async run(input: string, options?: ReasoningOptions) {
       const request = reasoningInputSchema.parse(input);
-      const { maxIterations } = reasoningOptionsSchema.parse(options ?? {});
+      const { maxIterations, userId } = reasoningOptionsSchema.parse(options ?? {});
       const elapsed = startTimer();
       const trace: TraceEvent[] = [];
       let llmCalls = 0;
@@ -250,6 +282,8 @@ export function createPlanAndExecuteStrategy(
               tool,
               args,
               dependencies.operationalTools ?? getDefaultOperationalTools(),
+              dependencies.memoryStore,
+              userId,
             ));
 
         const State = Annotation.Root({

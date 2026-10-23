@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   reasoningResultSchema,
+  type ReasoningOptions,
   type ReasoningResult,
 } from "../agents/reasoning.js";
 import {
@@ -10,6 +11,10 @@ import {
 } from "./conversation-store.js";
 import { ConversationNotFoundError } from "./domain-error.js";
 import type { RecalledMemory } from "../memory/memory-store.js";
+import {
+  logLearningFailure,
+  type LearningLogger,
+} from "./learning-service.js";
 
 const chatInputSchema = z.object({
   message: z.string().trim().min(1),
@@ -46,7 +51,11 @@ export interface MemoryRecallStore {
 }
 
 export interface ChatStrategy {
-  run(input: ChatStrategyInput): Promise<ReasoningResult>;
+  run(input: ChatStrategyInput, options?: ReasoningOptions): Promise<ReasoningResult>;
+}
+
+export interface ChatLearningService {
+  learn(userId: string, message: string): Promise<unknown>;
 }
 
 export class ChatStrategyFailedError extends Error {
@@ -82,6 +91,8 @@ export function composeStrategyInput(input: ChatStrategyInput): string {
 export function createChatService(
   store: ConversationStore,
   memoryStore?: MemoryRecallStore,
+  learningService?: ChatLearningService,
+  learningLogger: LearningLogger = console,
 ) {
   return {
     async runChat(
@@ -122,7 +133,7 @@ export function createChatService(
       await store.append(conversationId, "user", input.message);
 
       const result = reasoningResultSchema.parse(
-        await strategy.run(strategyInput),
+        await strategy.run(strategyInput, { userId: input.userId }),
       );
       if (result.answer.startsWith("[FAILED]")) {
         throw new ChatStrategyFailedError();
@@ -130,7 +141,7 @@ export function createChatService(
 
       await store.append(conversationId, "assistant", result.answer);
 
-      return chatResponseSchema.parse({
+      const response = chatResponseSchema.parse({
         ...result,
         conversationId,
         metrics: {
@@ -138,6 +149,14 @@ export function createChatService(
           historyMessages: history.length,
         },
       });
+      if (learningService) {
+        void Promise.resolve()
+          .then(() => learningService.learn(input.userId, input.message))
+          .catch((error: unknown) => {
+            logLearningFailure(learningLogger, error);
+          });
+      }
+      return response;
     },
   };
 }

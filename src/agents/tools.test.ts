@@ -4,9 +4,11 @@ import {
   checkProviderStatusInputSchema,
   consultarRunbookInputSchema,
   createOperationalTools,
+  forgetPreferenceInputSchema,
   listAlertsInputSchema,
   listIncidentsInputSchema,
   openIncidentInputSchema,
+  runForgetPreferenceTool,
 } from "./tools.js";
 import { runbookLookupResultSchema } from "../services/runbook-service.js";
 import type { DemoData, RunbookRecord } from "../services/operational-store.js";
@@ -202,6 +204,105 @@ test("rejects invalid arguments and annotates each tool field", async () => {
       assert.match(description, /não invente|não afirme/);
     }
   });
+});
+
+test("forget_preference validates preference and uses trusted user context", async () => {
+  const recalledUsers: string[] = [];
+  const deletions: Array<{ userId: string; id: string }> = [];
+  const store = {
+    async recall(userId: string) {
+      recalledUsers.push(userId);
+      return [{
+        id: "memory-1",
+        userId,
+        fact: "The operator prefers email.",
+        embedding: new Array(384).fill(0),
+        createdAt: new Date("2026-10-23T00:00:00.000Z"),
+        score: 0.9,
+      }];
+    },
+    forget(userId: string, id: string) {
+      deletions.push({ userId, id });
+      return true;
+    },
+  };
+
+  assert.deepEqual(Object.keys(forgetPreferenceInputSchema.shape), ["preference"]);
+  assert.equal(
+    forgetPreferenceInputSchema.safeParse({
+      preference: "email",
+      userId: "other-user",
+    }).success,
+    false,
+  );
+  assert.equal(forgetPreferenceInputSchema.safeParse({ preference: " " }).success, false);
+  assert.deepEqual(
+    JSON.parse(await runForgetPreferenceTool(
+      store,
+      { preference: "email" },
+      { userId: "operator-1" },
+    )),
+    { status: "deleted", preference: "The operator prefers email." },
+  );
+  assert.deepEqual(recalledUsers, ["operator-1"]);
+  assert.deepEqual(deletions, [{ userId: "operator-1", id: "memory-1" }]);
+  await assert.rejects(
+    runForgetPreferenceTool(store, { preference: "email" }, {}),
+  );
+  await assert.rejects(
+    runForgetPreferenceTool(store, {
+      preference: "email",
+      userId: "other-user",
+    }, { userId: "operator-1" }),
+  );
+  assert.deepEqual(recalledUsers, ["operator-1"]);
+
+  const noMatch = {
+    async recall() { return []; },
+    forget() { return false; },
+  };
+  assert.deepEqual(
+    JSON.parse(await runForgetPreferenceTool(
+      noMatch,
+      { preference: "phone" },
+      { userId: "operator-1" },
+    )),
+    { status: "not_found" },
+  );
+  const ambiguous = {
+    async recall(userId: string) {
+      return [
+        {
+          id: "memory-1",
+          userId,
+          fact: "Prefers email.",
+          embedding: new Array(384).fill(0),
+          createdAt: new Date("2026-10-23T00:00:00.000Z"),
+          score: 0.88,
+        },
+        {
+          id: "memory-2",
+          userId,
+          fact: "Prefers weekly email reports.",
+          embedding: new Array(384).fill(0),
+          createdAt: new Date("2026-10-23T00:00:00.000Z"),
+          score: 0.82,
+        },
+      ];
+    },
+    forget() { assert.fail("Ambiguous preference must not be deleted."); },
+  };
+  assert.deepEqual(
+    JSON.parse(await runForgetPreferenceTool(
+      ambiguous,
+      { preference: "email" },
+      { userId: "operator-1" },
+    )),
+    {
+      status: "ambiguous",
+      candidates: ["Prefers email.", "Prefers weekly email reports."],
+    },
+  );
 });
 
 test("check_provider_status defaults to GitHub and supports Cloudflare", async () => {

@@ -218,6 +218,44 @@ test("executes the original plan without replanner model calls when disabled", a
   assert.match(result.answer, /Completed 2 planned step/i);
 });
 
+test("forget_preference uses the request user identity outside model-selected arguments", async () => {
+  const recalledUsers: string[] = [];
+  const forgotten: Array<{ userId: string; memoryId: string }> = [];
+  const strategy = createPlanAndExecuteStrategy({
+    memoryStore: {
+      async recall(userId) {
+        recalledUsers.push(userId);
+        return [{
+          id: "memory-1",
+          userId,
+          fact: "The operator prefers email.",
+          embedding: new Array(384).fill(0),
+          createdAt: new Date("2026-10-23T00:00:00.000Z"),
+          score: 0.9,
+        }];
+      },
+      forget(userId, memoryId) {
+        forgotten.push({ userId, memoryId });
+        return true;
+      },
+    },
+    noReplanner: true,
+    planner: async () => ({ steps: ["Forget email preference"] }),
+    executor: async () => ({
+      tool: "forget_preference",
+      args: { preference: "email" },
+    }),
+  });
+
+  const result = await strategy.run("Forget my email preference", {
+    userId: "operator-1",
+  });
+
+  assert.deepEqual(recalledUsers, ["operator-1"]);
+  assert.deepEqual(forgotten, [{ userId: "operator-1", memoryId: "memory-1" }]);
+  assert.match(result.answer, /deleted/);
+});
+
 test("routes incident-list and runbook operations through isolated operational tools", async () => {
   const store = new SqliteOpsStore(":memory:");
   await store.upsertDemoData(DEMO_DATA, DEMO_RUNBOOKS);
