@@ -2,6 +2,7 @@ import { createStrategyRegistry } from "./agents/index.js";
 import { createApp } from "./http/server.js";
 import { embed } from "./memory/embeddings.js";
 import { MemoryStore } from "./memory/memory-store.js";
+import { createLlmSummarizer } from "./services/summarizer.js";
 import {
   createLearningExtractor,
   createLearningService,
@@ -21,6 +22,7 @@ if (process.argv[1]?.endsWith("/index.ts")) {
     conversationStore,
     memoryStore,
     learningService,
+    summarizer: createLlmSummarizer(),
     strategies: createStrategyRegistry(memoryStore),
   }).listen(port);
 }

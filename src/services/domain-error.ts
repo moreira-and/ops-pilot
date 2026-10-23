@@ -25,3 +25,9 @@ export class ValidationDomainError extends DomainError {
     super(message, "VALIDATION_ERROR");
   }
 }
+
+export class SummarizationFailedError extends DomainError {
+  constructor(message = "Conversation summarization failed.") {
+    super(message, "SUMMARIZATION_FAILED");
+  }
+}

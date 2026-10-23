@@ -13,17 +13,20 @@ import {
 import {
   conversationMessageSchema,
   conversationSchema,
+  conversationSummarySchema,
   newConversationMessageSchema,
   type Conversation,
   type ConversationMessage,
   type ConversationMessageRole,
   type ConversationStore,
+  type ConversationSummary,
+  type ConversationSummaryStore,
 } from "../services/conversation-store.js";
 
 type SqlRow = Record<string, SQLOutputValue>;
 
 const conversationIdSchema = z.string().trim().min(1);
-const historyLimitSchema = z.number().int().min(0).max(12);
+const historyLimitSchema = z.number().int().min(0).max(8);
 
 function textField(row: SqlRow, name: string): string {
   const value = row[name];
@@ -63,12 +66,16 @@ function mapMessage(row: SqlRow): ConversationMessage {
   });
 }
 
-export class SqliteConversationStore implements ConversationStore {
+export class SqliteConversationStore implements ConversationStore, ConversationSummaryStore {
   private readonly db: DatabaseSync;
   private readonly findConversation: StatementSync;
   private readonly insertConversation: StatementSync;
   private readonly insertMessage: StatementSync;
   private readonly selectLastMessages: StatementSync;
+  private readonly selectSummary: StatementSync;
+  private readonly upsertSummary: StatementSync;
+  private readonly countConversationMessages: StatementSync;
+  private readonly selectMessagesBetween: StatementSync;
 
   constructor(path = process.env.OPSPILOT_DB ?? "./data/opspilot.db") {
     if (path !== ":memory:") {
@@ -94,6 +101,14 @@ export class SqliteConversationStore implements ConversationStore {
 
       CREATE INDEX IF NOT EXISTS messages_conversation_sequence_idx
         ON messages(conversation_id, sequence);
+
+      CREATE TABLE IF NOT EXISTS conversation_summaries (
+        conversation_id TEXT PRIMARY KEY NOT NULL REFERENCES conversations(id),
+        summary TEXT NOT NULL
+          CHECK (length(trim(summary)) > 0 AND length(summary) <= 900),
+        summarized_through INTEGER NOT NULL CHECK (summarized_through > 0),
+        updated_at TEXT NOT NULL
+      );
     `);
 
     this.findConversation = this.db.prepare(
@@ -121,6 +136,29 @@ export class SqliteConversationStore implements ConversationStore {
         ORDER BY sequence DESC
         LIMIT ?
       )
+      ORDER BY sequence ASC
+    `);
+    this.selectSummary = this.db.prepare(
+      `SELECT conversation_id, summary, summarized_through, updated_at
+       FROM conversation_summaries WHERE conversation_id = ?`,
+    );
+    this.upsertSummary = this.db.prepare(`
+      INSERT INTO conversation_summaries
+        (conversation_id, summary, summarized_through, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(conversation_id) DO UPDATE SET
+        summary = excluded.summary,
+        summarized_through = excluded.summarized_through,
+        updated_at = excluded.updated_at
+      WHERE excluded.summarized_through > conversation_summaries.summarized_through
+    `);
+    this.countConversationMessages = this.db.prepare(
+      "SELECT COUNT(*) AS total FROM messages WHERE conversation_id = ?",
+    );
+    this.selectMessagesBetween = this.db.prepare(`
+      SELECT conversation_id, sequence, role, content, created_at
+      FROM messages
+      WHERE conversation_id = ? AND sequence >= ? AND sequence <= ?
       ORDER BY sequence ASC
     `);
   }
@@ -167,6 +205,64 @@ export class SqliteConversationStore implements ConversationStore {
     }
     if (limit === 0) return [];
     return this.selectLastMessages.all(conversationId, limit).map(mapMessage);
+  }
+
+  async getSummary(conversationIdInput: string): Promise<ConversationSummary | null> {
+    const conversationId = conversationIdSchema.parse(conversationIdInput);
+    const row = this.selectSummary.get(conversationId);
+    if (!row) return null;
+    const through = row.summarized_through;
+    if (typeof through !== "number") {
+      throw new Error("SQLite returned an invalid summarized_through value.");
+    }
+    return conversationSummarySchema.parse({
+      conversationId: textField(row, "conversation_id"),
+      summary: textField(row, "summary"),
+      summarizedThrough: through,
+      updatedAt: dateField(row, "updated_at"),
+    });
+  }
+
+  async countMessages(conversationIdInput: string): Promise<number> {
+    const conversationId = conversationIdSchema.parse(conversationIdInput);
+    const total = this.countConversationMessages.get(conversationId)?.total;
+    if (typeof total !== "number") {
+      throw new Error("SQLite returned an invalid message count.");
+    }
+    return total;
+  }
+
+  async messagesBetween(
+    conversationIdInput: string,
+    fromInput: number,
+    toInput: number,
+  ): Promise<ConversationMessage[]> {
+    const conversationId = conversationIdSchema.parse(conversationIdInput);
+    const from = z.number().int().positive().parse(fromInput);
+    const to = z.number().int().positive().parse(toInput);
+    return this.selectMessagesBetween.all(conversationId, from, to).map(mapMessage);
+  }
+
+  async saveSummary(
+    conversationIdInput: string,
+    summaryInput: string,
+    summarizedThroughInput: number,
+  ): Promise<void> {
+    const summary = conversationSummarySchema.parse({
+      conversationId: conversationIdInput,
+      summary: summaryInput,
+      summarizedThrough: summarizedThroughInput,
+      updatedAt: new Date(),
+    });
+    if (!this.findConversation.get(summary.conversationId)) {
+      throw new ConversationNotFoundError(summary.conversationId);
+    }
+    this.upsertSummary.run(
+      summary.conversationId,
+      summary.summary,
+      summary.summarizedThrough,
+      summary.updatedAt.toISOString(),
+    );
   }
 
   close(): void {

@@ -82,7 +82,7 @@ export function createLearningService(
       }
 
       const memory = await dependencies.remember(userId, candidate.fact);
-      logger.info("Durable user memory learned.");
+      logger.info?.("Durable user memory learned.");
       return { status: "remembered", memory };
     },
   };

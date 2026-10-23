@@ -51,6 +51,12 @@ export const traceEventSchema = z.union([
       feedback: z.string(),
     }),
   ]),
+  traceBaseSchema.extend({
+    type: z.literal("summarize"),
+    conversationId: z.string().min(1),
+    messagesSummarized: z.number().int().positive(),
+    summarizedThrough: z.number().int().positive(),
+  }),
   traceBaseSchema.extend({ type: z.literal("answer"), content: z.string() }),
 ]);
 

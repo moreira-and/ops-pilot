@@ -39,7 +39,7 @@ Returns the validated reasoning result, the active conversation ID, and the coun
 }
 ```
 
-The example's trace is abbreviated. `historyMessages` is an integer from 0 through 12 and excludes the current user message and the reply being generated. The conversation ID is returned for both newly created and continued conversations.
+The example's trace is abbreviated. `historyMessages` is an integer from 0 through 8 (superseded 12; see feature 010) and excludes the current user message and the reply being generated. The conversation ID is returned for both newly created and continued conversations.
 
 ### Errors
 
@@ -59,7 +59,7 @@ No error response includes a successful `answer`, `trace`, `metrics`, or `conver
 - Validate the request with Zod before resolving the strategy or accessing conversation data.
 - Resolve the requested strategy before running the chat operation; an unknown strategy does not create or mutate a conversation.
 - An omitted `conversationId` creates a new conversation. A supplied ID is checked before strategy execution and is never silently replaced.
-- Retrieve at most the 12 most recent earlier messages and pass the chat strategy boundary `{ message, history }`, where `history` is the bounded chronological list of role-preserving messages.
+- Retrieve at most the 8 most recent (feature 010; older messages are summarized) earlier messages and pass the chat strategy boundary `{ message, history }`, where `history` is the bounded chronological list of role-preserving messages.
 - The HTTP adapter composes prior messages with explicit `User`/`Assistant` labels and appends the current user message last when calling the existing reasoning strategy.
 - `metrics.historyMessages` equals the number of prior messages actually included in that composed input.
 - Validate the reasoning result before persisting the assistant reply. Append messages using the conversation store; a persistence error fails the request instead of returning a success result.

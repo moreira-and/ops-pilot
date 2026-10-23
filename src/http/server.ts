@@ -16,6 +16,7 @@ import {
 } from "../services/chat-service.js";
 import type { ConversationStore } from "../services/conversation-store.js";
 import { ConversationNotFoundError } from "../services/domain-error.js";
+import type { Summarizer } from "../services/summarizer.js";
 import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
 
 const chatRequestSchema = z.object({
@@ -29,7 +30,7 @@ const chatRequestSchema = z.object({
 const chatResponseSchema = reasoningResultSchema.extend({
   conversationId: z.string().trim().min(1),
   metrics: reasoningMetricsSchema.extend({
-    historyMessages: z.number().int().min(0).max(12),
+    historyMessages: z.number().int().min(0).max(8),
   }),
 });
 
@@ -41,6 +42,7 @@ export interface ChatServerOptions {
   conversationStore?: ConversationStore;
   memoryStore?: MemoryRecallStore;
   learningService?: ChatLearningService;
+  summarizer?: Summarizer;
   timeoutMs?: number;
 }
 
@@ -97,6 +99,8 @@ export function createApp(options: ChatServerOptions = {}): Express {
     conversationStore,
     options.memoryStore,
     options.learningService,
+    console,
+    options.summarizer,
   );
   const app = express();
 

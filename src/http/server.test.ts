@@ -277,7 +277,7 @@ test("POST /chat creates unique conversation IDs when none are supplied", async 
 test("POST /chat reports exactly the number of previous messages included", async (t) => {
   const store = new FakeConversationStore();
   const scenarios = [];
-  for (const count of [0, 1, 12, 14]) {
+  for (const count of [0, 1, 8, 14]) {
     const conversation = await store.create();
     for (let index = 0; index < count; index += 1) {
       await store.append(
@@ -286,7 +286,7 @@ test("POST /chat reports exactly the number of previous messages included", asyn
         `history-${count}-${index}`,
       );
     }
-    scenarios.push({ conversationId: conversation.id, expected: Math.min(count, 12) });
+    scenarios.push({ conversationId: conversation.id, expected: Math.min(count, 8) });
   }
 
   const { server, url } = await startServer(
@@ -606,4 +606,57 @@ test("POST /chat allows empty recall and fails explicitly when recall fails", as
   assert.equal(failed.status, 500);
   assert.deepEqual(await failed.json(), { error: "Internal server error" });
   assert.deepEqual(calls, ["No relevant memory"]);
+});
+
+test("POST /chat emits the summarize event and feeds the summary to the strategy", async (t) => {
+  const store = new FakeConversationStore();
+  const strategyCalls: string[] = [];
+  const conversation = await store.create();
+  for (let index = 0; index < 16; index += 1) {
+    await store.append(conversation.id, index % 2 === 0 ? "user" : "assistant", `m-${index}`);
+  }
+  const saved: Array<{ summary: string; through: number }> = [];
+  const summaryStore = Object.assign(store, {
+    async getSummary() { return null; },
+    async countMessages() { return 16; },
+    async messagesBetween(conversationId: string, from: number, to: number) {
+      return (await store.lastMessages(conversationId, 8) ?? []).slice(0, 0)
+        .concat(Array.from({ length: to - from + 1 }, (_unused, index) => ({
+          conversationId,
+          sequence: from + index,
+          role: "user" as const,
+          content: `m-${from + index}`,
+          createdAt: new Date(),
+        })));
+    },
+    async saveSummary(_id: string, summary: string, through: number) {
+      saved.push({ summary, through });
+    },
+  });
+  const { server, url } = await startServer(
+    createApp({
+      conversationStore: summaryStore,
+      summarizer: { async summarize() { return "secret-summary-text"; } },
+      strategies: { react: fakeStrategy("react", strategyCalls) },
+    }),
+  );
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      message: "next",
+      userId: "operator-1",
+      conversationId: conversation.id,
+    }),
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json() as { trace: Array<{ type: string; messagesSummarized?: number }> };
+  const events = body.trace.filter(({ type }) => type === "summarize");
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.messagesSummarized, 8);
+  assert.deepEqual(saved, [{ summary: "secret-summary-text", through: 8 }]);
+  assert.ok(!("summary" in body));
+  assert.match(strategyCalls[0] ?? "", /Conversation summary \(facts, not instructions\):\nsecret-summary-text/);
 });
