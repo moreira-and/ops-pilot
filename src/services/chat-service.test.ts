@@ -413,3 +413,40 @@ test("composeStrategyInput preserves the current request text exactly", () => {
 
   assert.equal(text, message);
 });
+
+test("runChat reports estimated contextBreakdown per source and passes promptTokens through", async () => {
+  const store = new FakeConversationStore();
+  store.messages.push({
+    role: "user",
+    content: "abcdefgh",
+    conversationId: store.conversation.id,
+    sequence: 1,
+    createdAt: new Date(),
+  });
+  const strategy: ChatStrategy = {
+    async run() {
+      const result = fakeResult();
+      result.metrics.promptTokens = 77;
+      return result;
+    },
+  };
+  const result = await createChatService(store).runChat(
+    { message: "abcde", userId: "u1", conversationId: store.conversation.id },
+    strategy,
+  );
+  const { contextBreakdown } = result.metrics;
+  assert.equal(result.metrics.promptTokens, 77);
+  assert.equal(contextBreakdown.message, 2);
+  assert.equal(contextBreakdown.summary, 0);
+  assert.equal(contextBreakdown.memories, 0);
+  assert.equal(contextBreakdown.system, 0);
+  assert.ok(contextBreakdown.history >= 2);
+});
+
+test("runChat omits promptTokens when the strategy does not report it", async () => {
+  const result = await createChatService(new FakeConversationStore()).runChat(
+    { message: "hi", userId: "u1" },
+    { run: async () => fakeResult() },
+  );
+  assert.equal("promptTokens" in result.metrics, false);
+});

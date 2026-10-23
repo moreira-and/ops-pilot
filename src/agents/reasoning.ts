@@ -63,6 +63,7 @@ export const traceEventSchema = z.union([
 export const reasoningMetricsSchema = z.object({
   llmCalls: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(),
+  promptTokens: z.number().int().nonnegative().optional(),
 });
 
 export const reasoningResultSchema = z.object({

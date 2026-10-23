@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { createModel } from "./model.js";
-import { ModelCallCounter, startTimer } from "./metrics.js";
+import { ModelCallCounter, startTimer, sumPromptTokens } from "./metrics.js";
 import {
   reasoningInputSchema,
   reasoningMetricsSchema,
@@ -119,6 +119,7 @@ export function withReflection(
       const trace: TraceEvent[] = [];
       const criticCounter = new ModelCallCounter();
       let strategyCalls = 0;
+      let strategyPromptTokens: number | undefined;
 
       const appendTrace = (events: readonly TraceEvent[]) => {
         for (const event of events) {
@@ -132,6 +133,9 @@ export function withReflection(
         }
       };
 
+      const withTokens = (promptTokens: number | undefined) =>
+        promptTokens === undefined ? {} : { promptTokens };
+
       const makeResult = (answer: string): ReasoningResult =>
         reasoningResultSchema.parse({
           answer,
@@ -139,6 +143,9 @@ export function withReflection(
           metrics: reasoningMetricsSchema.parse({
             llmCalls: strategyCalls + criticCounter.count,
             latencyMs: elapsed(),
+            ...withTokens(
+              sumPromptTokens(strategyPromptTokens, criticCounter.promptTokens),
+            ),
           }),
         });
 
@@ -146,6 +153,7 @@ export function withReflection(
         await strategy.run(request, parsedRunOptions),
       );
       strategyCalls += candidate.metrics.llmCalls;
+      strategyPromptTokens = sumPromptTokens(strategyPromptTokens, candidate.metrics.promptTokens);
       appendTrace(candidate.trace);
 
       if (candidate.answer.startsWith("[FAILED]") || maxReflections === 0) {
@@ -155,6 +163,7 @@ export function withReflection(
           metrics: {
             llmCalls: strategyCalls,
             latencyMs: elapsed(),
+            ...withTokens(strategyPromptTokens),
           },
         });
       }
@@ -207,6 +216,8 @@ export function withReflection(
           ),
         );
         strategyCalls += candidate.metrics.llmCalls;
+        strategyPromptTokens = sumPromptTokens(strategyPromptTokens, candidate.metrics.promptTokens);
+      strategyPromptTokens = sumPromptTokens(strategyPromptTokens, candidate.metrics.promptTokens);
         appendTrace(candidate.trace);
         if (candidate.answer.startsWith("[FAILED]")) {
           return makeResult(candidate.answer);

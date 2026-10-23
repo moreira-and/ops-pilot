@@ -24,6 +24,7 @@ import {
   DEFAULT_CONTEXT_BUDGET,
   type ContextBudget,
 } from "../context/context-builder.js";
+import { CONTEXT_SOURCES, estimateBreakdown } from "../context/tokens.js";
 
 const chatInputSchema = z.object({
   message: z.string().trim().min(1),
@@ -47,6 +48,11 @@ const chatResponseSchema = reasoningResultSchema.extend({
   conversationId: z.string().trim().min(1),
   metrics: reasoningResultSchema.shape.metrics.extend({
     historyMessages: z.number().int().min(0).max(HISTORY_WINDOW),
+    contextBreakdown: z.object(
+      Object.fromEntries(
+        CONTEXT_SOURCES.map((source) => [source, z.number().int().nonnegative()]),
+      ) as Record<(typeof CONTEXT_SOURCES)[number], z.ZodNumber>,
+    ),
   }),
 });
 
@@ -86,12 +92,24 @@ export function composeStrategyInput(
   }, budget).prompt;
 }
 
+export function measureContextBreakdown(
+  input: ChatStrategyInput,
+  budget: ContextBudget = DEFAULT_CONTEXT_BUDGET,
+) {
+  const { sections } = buildContext({
+    ...input,
+    history: input.history.map(({ role, content }) => ({ role, content })),
+  }, budget);
+  return estimateBreakdown({ ...sections, message: input.message });
+}
+
 export function createChatService(
   store: ConversationStore,
   memoryStore?: MemoryRecallStore,
   learningService?: ChatLearningService,
   learningLogger: LearningLogger = console,
   summarizer?: Summarizer,
+  contextBudget: ContextBudget = DEFAULT_CONTEXT_BUDGET,
 ) {
   async function pruneHistory(conversationId: string) {
     if (!summarizer || !hasSummaryStore(store)) {
@@ -198,6 +216,7 @@ export function createChatService(
         metrics: {
           ...result.metrics,
           historyMessages: history.length,
+          contextBreakdown: measureContextBreakdown(strategyInput, contextBudget),
         },
       });
       if (learningService) {

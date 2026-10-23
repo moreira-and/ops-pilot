@@ -153,6 +153,15 @@ function toMessages(value: unknown): BaseMessage[] {
   });
 }
 
+function reactMetrics(counter: ModelCallCounter, latencyMs: number) {
+  const promptTokens = counter.promptTokens;
+  return {
+    llmCalls: counter.count,
+    latencyMs,
+    ...(promptTokens === undefined ? {} : { promptTokens }),
+  };
+}
+
 function failureMessage(error: unknown): string {
   if (
     error instanceof ModelConfigurationError ||
@@ -218,7 +227,7 @@ export function createReactStrategy(
         return reasoningResultSchema.parse({
           answer,
           trace: toTrace(messages),
-          metrics: { llmCalls: counter.count, latencyMs: elapsed() },
+          metrics: reactMetrics(counter, elapsed()),
         });
       } catch (error) {
         const answer = failureMessage(error);
@@ -237,7 +246,7 @@ export function createReactStrategy(
               content: `[FAILED] ${answer}`,
             },
           ],
-          metrics: { llmCalls: counter.count, latencyMs: elapsed() },
+          metrics: reactMetrics(counter, elapsed()),
         });
       }
     },

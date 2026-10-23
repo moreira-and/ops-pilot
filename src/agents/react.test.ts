@@ -136,3 +136,33 @@ test("ReAct returns explicit failure trace and metrics when graph execution fail
   assert.equal(result.trace[1]?.type, "answer");
   assert.ok(result.metrics.latencyMs >= 0);
 });
+
+function reactWithUsage(usage: number | undefined) {
+  return createReactStrategy({
+    tools: [],
+    modelFactory: () => new ChatOpenAI({ model: "test/model" }),
+    agentFactory: () => ({
+      invoke: async (_input, config) => {
+        for (const callback of (config?.callbacks as unknown[]) ?? []) {
+          if (callback instanceof ModelCallCounter) {
+            callback.recordInvocation("run-1");
+            if (usage !== undefined) {
+              callback.handleLLMEnd(
+                { generations: [], llmOutput: { tokenUsage: { promptTokens: usage } } },
+                "run-1",
+              );
+            }
+          }
+        }
+        return { messages: [new HumanMessage("q"), new AIMessage("done")] };
+      },
+    }),
+  });
+}
+
+test("ReAct reports real promptTokens when usage is reported and omits it otherwise", async () => {
+  const withUsage = await reactWithUsage(42).run("q");
+  assert.equal(withUsage.metrics.promptTokens, 42);
+  const without = await reactWithUsage(undefined).run("q");
+  assert.equal("promptTokens" in without.metrics, false);
+});

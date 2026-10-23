@@ -76,6 +76,7 @@ export interface ContextSectionBreakdown {
 
 export interface BuildContext {
   prompt: string;
+  sections: Record<ContextSectionName, string>;
   breakdown: Record<ContextSectionName, ContextSectionBreakdown>;
 }
 
@@ -219,6 +220,11 @@ export function buildContext(
     prompt: sections.length === 0
       ? input.message
       : [...sections, `User: ${input.message}`].join("\n"),
+    sections: {
+      summary: summary.section,
+      history: history.section,
+      memories: memories.section,
+    },
     breakdown: {
       summary: summary.breakdown,
       history: history.breakdown,

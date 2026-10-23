@@ -36,6 +36,13 @@ const chatResponseSchema = reasoningResultSchema.extend({
   conversationId: z.string().trim().min(1),
   metrics: reasoningMetricsSchema.extend({
     historyMessages: z.number().int().min(0).max(8),
+    contextBreakdown: z.object({
+      system: z.number().int().nonnegative(),
+      summary: z.number().int().nonnegative(),
+      history: z.number().int().nonnegative(),
+      memories: z.number().int().nonnegative(),
+      message: z.number().int().nonnegative(),
+    }),
   }),
 });
 
@@ -114,6 +121,7 @@ export function createApp(options: ChatServerOptions = {}): Express {
     options.learningService,
     console,
     options.summarizer,
+    contextBudget,
   );
   const app = express();
 

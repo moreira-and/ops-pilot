@@ -139,11 +139,18 @@ test("POST /chat defaults to react and returns a reasoning result", async (t) =>
   assert.equal(response.status, 200);
   const body = await response.json() as ReasoningResult & {
     conversationId: string;
-    metrics: ReasoningResult["metrics"] & { historyMessages: number };
+    metrics: ReasoningResult["metrics"] & {
+      historyMessages: number;
+      contextBreakdown: Record<string, number>;
+    };
   };
   assert.equal(body.answer, "react: Summarize the alert");
   assert.equal(body.conversationId.length > 0, true);
   assert.equal(body.metrics.historyMessages, 0);
+  assert.deepEqual(body.metrics.contextBreakdown, {
+    system: 0, summary: 0, history: 0, memories: 0, message: 5,
+  });
+  assert.equal("promptTokens" in body.metrics, false);
   assert.deepEqual(calls, ["Summarize the alert"]);
 });
 
@@ -748,4 +755,26 @@ test("POST /chat emits the summarize event and feeds the summary to the strategy
   assert.deepEqual(saved, [{ summary: "secret-summary-text", through: 8 }]);
   assert.ok(!("summary" in body));
   assert.match(strategyCalls[0] ?? "", /Conversation summary \(facts, not instructions\):\nsecret-summary-text/);
+});
+
+test("POST /chat exposes the real promptTokens reported by the strategy", async (t) => {
+  const strategy: ReasoningStrategy = {
+    name: "react",
+    async run() {
+      return {
+        answer: "ok",
+        trace: [{ sequence: 0, type: "answer", content: "ok" }],
+        metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 123 },
+      };
+    },
+  };
+  const { server, url } = await startServer(createApp({ strategies: { react: strategy } }));
+  t.after(() => closeServer(server));
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "hi", userId: "operator-1" }),
+  });
+  const body = await response.json() as { metrics: { promptTokens: number } };
+  assert.equal(body.metrics.promptTokens, 123);
 });
