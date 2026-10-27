@@ -32,7 +32,7 @@ import { redactToolArgs } from "./trace.js";
 
 type TraceEventInput = TraceEvent extends infer Event
   ? Event extends { sequence: number }
-    ? Omit<Event, "sequence">
+    ? Omit<Event, "sequence" | "node">
     : never
   : never;
 
@@ -114,7 +114,13 @@ function safeArgs(value: unknown): Record<string, unknown> {
 export function toTrace(messages: readonly BaseMessage[]): TraceEvent[] {
   const trace: TraceEvent[] = [];
   const push = (event: TraceEventInput) => {
-    trace.push(traceEventSchema.parse({ ...event, sequence: trace.length }));
+    trace.push(
+      traceEventSchema.parse({
+        ...event,
+        node: "strategy-react",
+        sequence: trace.length,
+      }),
+    );
   };
   for (const message of messages) {
     if (message instanceof AIMessage) {
@@ -237,12 +243,14 @@ export function createReactStrategy(
             {
               sequence: 0,
               type: "observation",
+              node: "strategy-react",
               content: answer,
               error: true,
             },
             {
               sequence: 1,
               type: "answer",
+              node: "strategy-react",
               content: `[FAILED] ${answer}`,
             },
           ],

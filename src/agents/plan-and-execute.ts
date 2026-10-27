@@ -103,7 +103,7 @@ export interface PlanAndExecuteDependencies {
 
 type TraceEventInput = TraceEvent extends infer Event
   ? Event extends { sequence: number }
-    ? Omit<Event, "sequence">
+    ? Omit<Event, "sequence" | "node">
     : never
   : never;
 
@@ -216,6 +216,7 @@ export function createPlanAndExecuteStrategy(
       const emit = (event: TraceEventInput): TraceEvent => {
         const parsed = traceEventSchema.parse({
           ...event,
+          node: "strategy-plan-and-execute",
           sequence: trace.length,
         });
         trace.push(parsed);

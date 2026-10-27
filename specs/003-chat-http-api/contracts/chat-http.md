@@ -2,7 +2,7 @@
 
 ## `POST /chat`
 
-Accepts a JSON request and executes one registered reasoning strategy.
+Accepts a JSON request and executes one of the supported reasoning strategies through the production graph.
 
 ### Request
 
@@ -17,8 +17,8 @@ Accepts a JSON request and executes one registered reasoning strategy.
 | Property | Type | Required | Behavior |
 |----------|------|----------|----------|
 | `message` | string | Yes | Must be non-empty after trimming |
-| `strategy` | string | No | Defaults to `react`; must match a registered strategy |
-| `reflact` | boolean | No | Defaults to `false`; when true, applies reflection to the selected strategy |
+| `strategy` | string | No | When omitted, the graph selects a strategy automatically. When supplied, must be `react`, `plan-and-execute`, or `reflect:react` and bypasses the router. |
+| `reflact` | boolean | No | Defaults to `false`; when true, applies reflection to the selected strategy unless `strategy` is already `reflect:react`. |
 
 ### Success: `200 OK`
 
@@ -35,7 +35,7 @@ Returns the result fields validated by the reasoning result schema:
 }
 ```
 
-The example's trace is abbreviated; actual trace events retain the sequence and event schema produced by the selected strategy.
+The example's trace is abbreviated. Every trace event has a contiguous `sequence` and a `node` identifying its producer. Automatic selection adds a `route` event with the selected route, a non-empty reason, and `source: "router"`; an explicit `strategy` adds the same event with `source: "override"`.
 
 ### Errors
 
@@ -43,7 +43,7 @@ The example's trace is abbreviated; actual trace events retain the sequence and 
 |--------|-----------|------|
 | `400 Bad Request` | Missing JSON body or valid JSON that fails the request schema | `{"error":"Invalid request body","issues":[...]}` where `issues` contains Zod validation issues |
 | `400 Bad Request` | JSON syntax is malformed | `{"error":"Invalid JSON"}` |
-| `422 Unprocessable Entity` | Strategy name is not registered | `{"error":"Unknown strategy","strategy":"..."}` |
+| `422 Unprocessable Entity` | Strategy is not one of the supported routes | `{"error":"Unknown strategy","strategy":"..."}` |
 | `504 Gateway Timeout` | Strategy has not completed within 180 seconds | `{"error":"Strategy execution timed out"}` |
 | `500 Internal Server Error` | Unexpected execution failure or invalid strategy result | `{"error":"Internal server error"}` |
 
@@ -52,7 +52,8 @@ The precise human-readable text may vary; status and data fields are part of the
 ### Execution Rules
 
 - Request validation occurs before strategy resolution and execution.
-- An omitted strategy selects the registered `react` strategy.
+- An omitted strategy invokes the structured router, which selects exactly one of `react`, `plan-and-execute`, or `reflect:react`.
+- A supplied supported strategy bypasses the router and is recorded as an override in the trace.
 - Strategy selection occurs before the timeout is started; the 180-second deadline bounds execution.
 - The production timeout is 180,000 milliseconds. Tests may inject a shorter deadline through the application factory.
 - The service listens on `PORT`, defaulting to 3000, when started by the existing development entrypoint.

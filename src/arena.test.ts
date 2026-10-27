@@ -9,7 +9,12 @@ import type { ReasoningStrategy } from "./agents/reasoning.js";
 
 const result = {
   answer: "Checked.",
-  trace: [{ sequence: 0, type: "answer" as const, content: "Checked." }],
+  trace: [{
+    sequence: 0,
+    type: "answer" as const,
+    node: "response",
+    content: "Checked.",
+  }],
   metrics: { llmCalls: 1, latencyMs: 2 },
 };
 

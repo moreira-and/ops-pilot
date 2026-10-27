@@ -13,10 +13,17 @@ export const alertFilterSchema = z.enum(["firing", "resolved", "all"]);
 
 const traceBaseSchema = z.object({
   sequence: z.number().int().nonnegative(),
+  node: z.string().trim().min(1).default("strategy"),
 });
 
 export const traceEventSchema = z.union([
   traceBaseSchema.extend({ type: z.literal("thought"), content: z.string() }),
+  traceBaseSchema.extend({
+    type: z.literal("route"),
+    route: z.enum(["react", "plan-and-execute", "reflect:react"]),
+    reason: z.string().trim().min(1),
+    source: z.enum(["router", "override"]),
+  }),
   traceBaseSchema.extend({
     type: z.literal("action"),
     tool: z.string().min(1),

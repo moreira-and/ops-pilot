@@ -205,6 +205,7 @@ export function createChatService(
           {
             sequence: Math.max(-1, ...result.trace.map((e) => e.sequence)) + 1,
             type: "summarize" as const,
+            node: "context",
             ...event,
           },
         ]

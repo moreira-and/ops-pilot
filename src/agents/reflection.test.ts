@@ -19,9 +19,10 @@ function result(answer: string, llmCalls = 1): ReasoningResult {
       {
         sequence: 0,
         type: "observation",
+        node: "strategy-react",
         content: `Evidence for ${answer}`,
       },
-      { sequence: 1, type: "answer", content: answer },
+      { sequence: 1, type: "answer", node: "strategy-react", content: answer },
     ],
     metrics: { llmCalls, latencyMs: 1 },
   };
@@ -194,26 +195,39 @@ test("rejects negative and non-integer reflection limits", () => {
 
 test("extracts only observations for the critic evidence context", () => {
   const trace: ReasoningResult["trace"] = [
-    { sequence: 0, type: "thought", content: "Hidden reasoning is omitted." },
+    {
+      sequence: 0,
+      type: "thought",
+      node: "strategy-react",
+      content: "Hidden reasoning is omitted.",
+    },
     {
       sequence: 1,
       type: "action",
+      node: "strategy-react",
       tool: "list_alerts",
       args: { status: "firing" },
     },
     {
       sequence: 2,
       type: "observation",
+      node: "strategy-react",
       tool: "list_alerts",
       content: "Alert A is firing.",
     },
     {
       sequence: 3,
       type: "observation",
+      node: "strategy-react",
       content: "Storage lookup failed.",
       error: true,
     },
-    { sequence: 4, type: "answer", content: "The service is healthy." },
+    {
+      sequence: 4,
+      type: "answer",
+      node: "strategy-react",
+      content: "The service is healthy.",
+    },
   ];
 
   assert.equal(
@@ -228,10 +242,16 @@ test("builds the critic request from the task, observations, and candidate only"
     {
       answer: "Alert A is firing.",
       trace: [
-        { sequence: 0, type: "thought", content: "Ignore this hidden thought." },
+        {
+          sequence: 0,
+          type: "thought",
+          node: "strategy-react",
+          content: "Ignore this hidden thought.",
+        },
         {
           sequence: 1,
           type: "observation",
+          node: "strategy-react",
           tool: "list_alerts",
           content: "Alert A is firing.",
         },

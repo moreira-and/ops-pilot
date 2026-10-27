@@ -185,12 +185,14 @@ export function withReflection(
             traceEventSchema.parse({
               sequence: trace.length,
               type: "observation",
+              node: "strategy-reflect-react",
               content: message,
               error: true,
             }),
             traceEventSchema.parse({
               sequence: trace.length + 1,
               type: "answer",
+              node: "strategy-reflect-react",
               content: failureAnswer,
             }),
           );
@@ -200,6 +202,7 @@ export function withReflection(
         const critiqueEvent: CritiqueTraceEvent = {
           sequence: trace.length,
           type: "critique",
+          node: "strategy-reflect-react",
           approved: verdict.approved,
           feedback: verdict.feedback,
         };
@@ -217,7 +220,6 @@ export function withReflection(
         );
         strategyCalls += candidate.metrics.llmCalls;
         strategyPromptTokens = sumPromptTokens(strategyPromptTokens, candidate.metrics.promptTokens);
-      strategyPromptTokens = sumPromptTokens(strategyPromptTokens, candidate.metrics.promptTokens);
         appendTrace(candidate.trace);
         if (candidate.answer.startsWith("[FAILED]")) {
           return makeResult(candidate.answer);

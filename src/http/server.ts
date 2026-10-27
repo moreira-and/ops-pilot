@@ -3,6 +3,11 @@ import { z } from "zod";
 import { strategyRegistry } from "../agents/index.js";
 import { withReflection } from "../agents/reflection.js";
 import {
+  createProductionGraph,
+  productionRouteSchema,
+  type ProductionGraphDependencies,
+} from "../agents/production-graph.js";
+import {
   contextBudgetSchema,
   parseContextBudget,
   type ContextBudget,
@@ -27,7 +32,7 @@ import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
 const chatRequestSchema = z.object({
   message: z.string().trim().min(1),
   userId: z.string().trim().min(1),
-  strategy: z.string().trim().min(1).default("react"),
+  strategy: z.string().trim().min(1).optional(),
   reflact: z.boolean().default(false),
   conversationId: z.string().trim().min(1).optional(),
 });
@@ -50,6 +55,7 @@ const DEFAULT_TIMEOUT_MS = 180_000;
 
 export interface ChatServerOptions {
   strategies?: Record<string, ReasoningStrategy>;
+  route?: ProductionGraphDependencies["route"];
   reflectionDecorator?: (strategy: ReasoningStrategy) => ReasoningStrategy;
   contextBudget?: ContextBudget;
   env?: Pick<NodeJS.ProcessEnv, "CONTEXT_BUDGET">;
@@ -112,6 +118,11 @@ export function createApp(options: ChatServerOptions = {}): Express {
     : contextBudgetSchema.parse(options.contextBudget);
   const strategies = options.strategies ?? strategyRegistry;
   const reflectionDecorator = options.reflectionDecorator ?? withReflection;
+  const productionGraph = createProductionGraph({
+    strategies,
+    route: options.route,
+    reflectionDecorator,
+  });
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const conversationStore = options.conversationStore ??
     new SqliteConversationStore(":memory:");
@@ -136,19 +147,18 @@ export function createApp(options: ChatServerOptions = {}): Express {
       return;
     }
 
-    if (!Object.hasOwn(strategies, parsed.data.strategy)) {
+    if (
+      parsed.data.strategy !== undefined &&
+      !productionRouteSchema.safeParse(parsed.data.strategy).success
+    ) {
       response.status(422).json({
         error: "Unknown strategy",
         strategy: parsed.data.strategy,
       });
       return;
     }
-    const registeredStrategy = strategies[parsed.data.strategy];
 
     try {
-      const strategy = parsed.data.reflact
-        ? reflectionDecorator(registeredStrategy)
-        : registeredStrategy;
       const result = await chatService.runChat(
         {
           message: parsed.data.message,
@@ -158,9 +168,11 @@ export function createApp(options: ChatServerOptions = {}): Express {
         {
           run: (input, strategyOptions) =>
             runWithTimeout(
-              strategy.run(
+              productionGraph.run(
                 composeStrategyInput(input, contextBudget),
                 strategyOptions,
+                parsed.data.strategy,
+                parsed.data.reflact,
               ),
               timeoutMs,
             ),

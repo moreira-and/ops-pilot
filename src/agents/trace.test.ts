@@ -5,10 +5,11 @@ import { formatTrace, redactToolArgs } from "./trace.js";
 
 test("formats every trace event type in sequence and preserves escaped content", () => {
   const formatted = formatTrace([
-    { sequence: 0, type: "thought", content: "Check service state" },
+    { sequence: 0, type: "thought", node: "test", content: "Check service state" },
     {
       sequence: 1,
       type: "action",
+      node: "test",
       tool: "list_alerts",
       toolCallId: "call-1",
       args: { status: "firing" },
@@ -16,16 +17,23 @@ test("formats every trace event type in sequence and preserves escaped content",
     {
       sequence: 2,
       type: "observation",
+      node: "test",
       content: 'value with "quotes" and \\ slash',
     },
     {
       sequence: 3,
       type: "plan",
+      node: "test",
       content: "Investigate",
       steps: [{ id: "s1", description: "Check alert" }],
     },
-    { sequence: 4, type: "critique", content: "No additional action needed" },
-    { sequence: 5, type: "answer", content: "No active alerts." },
+    {
+      sequence: 4,
+      type: "critique",
+      node: "test",
+      content: "No additional action needed",
+    },
+    { sequence: 5, type: "answer", node: "test", content: "No active alerts." },
   ]);
 
   assert.match(formatted, /^1\. \{"sequence":0,"type":"thought"/);
@@ -41,6 +49,7 @@ test("formats structured reflection critiques and validates both critique varian
   const reflectionCritique = {
     sequence: 0,
     type: "critique" as const,
+    node: "test",
     approved: false,
     feedback: "Include the alert severity from the observations.",
   };
@@ -55,10 +64,12 @@ test("formats structured reflection critiques and validates both critique varian
     traceEventSchema.parse({
       sequence: 1,
       type: "critique",
+      node: "test",
       content: "The plan is complete.",
     }),
     {
       sequence: 1,
+      node: "test",
       type: "critique",
       content: "The plan is complete.",
     },

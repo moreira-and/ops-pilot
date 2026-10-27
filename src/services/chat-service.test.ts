@@ -60,7 +60,12 @@ class FakeConversationStore implements ConversationStore {
 function fakeResult(answer = "The alert is mitigated."): ReasoningResult {
   return {
     answer,
-    trace: [{ sequence: 0, type: "answer", content: answer }],
+    trace: [{
+      sequence: 0,
+      type: "answer",
+      node: "response",
+      content: answer,
+    }],
     metrics: { llmCalls: 1, latencyMs: 2 },
   };
 }
@@ -310,6 +315,7 @@ test("runChat summarizes expired messages once, persists, injects and emits the 
   const events = result.trace.filter(({ type }) => type === "summarize");
   assert.deepEqual(events, [{
     sequence: 1,
+    node: "context",
     type: "summarize",
     conversationId: store.conversation.id,
     messagesSummarized: 8,

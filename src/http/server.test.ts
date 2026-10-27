@@ -3,7 +3,10 @@ import { once } from "node:events";
 import test from "node:test";
 import type { Server } from "node:http";
 import { getEncoding } from "js-tiktoken";
-import { createApp } from "./server.js";
+import {
+  createApp as createExpressApp,
+  type ChatServerOptions,
+} from "./server.js";
 import {
   ContextBudgetConfigurationError,
   type ContextBudget,
@@ -25,12 +28,27 @@ function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
       calls.push(input);
       const result: ReasoningResult = {
         answer: `${name}: ${input}`,
-        trace: [{ sequence: 0, type: "answer", content: `${name}: ${input}` }],
+        trace: [{
+          sequence: 0,
+          type: "answer",
+          node: "answer",
+          content: `${name}: ${input}`,
+        }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
       return result;
     },
   };
+}
+
+function createApp(options: ChatServerOptions = {}) {
+  return createExpressApp({
+    ...options,
+    route: options.route ?? (async () => ({
+      route: "react",
+      reason: "Test router selected the direct request route.",
+    })),
+  });
 }
 
 function fakeMemory(id: string, fact: string): RecalledMemory {
@@ -154,6 +172,40 @@ test("POST /chat defaults to react and returns a reasoning result", async (t) =>
   assert.deepEqual(calls, ["Summarize the alert"]);
 });
 
+test("POST /chat automatically routes and includes route and node trace metadata", async (t) => {
+  const calls: string[] = [];
+  let routerCalls = 0;
+  const { server, url } = await startServer(createApp({
+    strategies: {
+      react: fakeStrategy("react", calls),
+      "plan-and-execute": fakeStrategy("plan-and-execute", calls),
+      "reflect:react": fakeStrategy("reflect:react", calls),
+    },
+    route: async () => {
+      routerCalls += 1;
+      return {
+        route: "plan-and-execute",
+        reason: "The request requires several ordered actions.",
+      };
+    },
+  }));
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Resolve and verify the incident", userId: "operator-1" }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as ReasoningResult;
+  assert.match(body.answer, /^plan-and-execute:/);
+  assert.equal(routerCalls, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(body.trace.some((event) => event.type === "route"), true);
+  assert.equal(body.trace.every((event) => typeof event.node === "string"), true);
+});
+
 test("POST /chat applies the same low section budgets to every supported strategy", async () => {
   const expectedHistory = "Conversation history:\nUser: recent";
   const expectedMemories = [
@@ -240,7 +292,12 @@ test("POST /chat passes the validated userId as strategy context", async (t) => 
       receivedUserId = options?.userId ?? "";
       return {
         answer: "Done.",
-        trace: [{ sequence: 0, type: "answer", content: "Done." }],
+        trace: [{
+          sequence: 0,
+          type: "answer",
+          node: "response",
+          content: "Done.",
+        }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -505,54 +562,54 @@ test("POST /chat returns 504 when strategy execution exceeds the deadline", asyn
   });
 });
 
-test("POST /chat returns 500 for strategy failures and invalid results", async (t) => {
+test("POST /chat returns 500 for strategy failures and invalid results", async () => {
   const failedResult: ReasoningStrategy = {
-    name: "failed",
+    name: "react",
     async run() {
       return {
         answer: "[FAILED] strategy failure",
-        trace: [{ sequence: 0, type: "answer", content: "[FAILED] strategy failure" }],
+        trace: [{
+          sequence: 0,
+          type: "answer",
+          node: "response",
+          content: "[FAILED] strategy failure",
+        }],
         metrics: { llmCalls: 0, latencyMs: 1 },
       };
     },
   };
   const invalidResult: ReasoningStrategy = {
-    name: "invalid",
+    name: "react",
     async run() {
       return { answer: "", trace: [], metrics: { llmCalls: -1, latencyMs: -1 } };
     },
   };
   const failingStrategy: ReasoningStrategy = {
-    name: "failing",
+    name: "react",
     async run() {
       throw new Error("private implementation detail");
     },
   };
-  const { server, url } = await startServer(
-    createApp({
-      strategies: {
-        failed: failedResult,
-        invalid: invalidResult,
-        failing: failingStrategy,
-      },
-    }),
-  );
-  t.after(() => closeServer(server));
-
-  for (const strategy of ["failed", "invalid", "failing"]) {
-    const response = await fetch(`${url}/chat`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        message: "Check the alert",
-        userId: "operator-1",
-        strategy,
-      }),
-    });
-    assert.equal(response.status, 500);
-    assert.deepEqual(await response.json(), {
-      error: "Internal server error",
-    });
+  for (const strategy of [failedResult, invalidResult, failingStrategy]) {
+    const { server, url } = await startServer(
+      createApp({ strategies: { react: strategy } }),
+    );
+    try {
+      const response = await fetch(`${url}/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "Check the alert",
+          userId: "operator-1",
+        }),
+      });
+      assert.equal(response.status, 500);
+      assert.deepEqual(await response.json(), {
+        error: "Internal server error",
+      });
+    } finally {
+      await closeServer(server);
+    }
   }
 });
 
@@ -560,10 +617,15 @@ test("POST /chat selects named strategies and reflects only when requested", asy
   const calls: string[] = [];
   const reflectedStrategies: string[] = [];
   const react = fakeStrategy("react", calls);
-  const alternate = fakeStrategy("alternate", calls);
+  const planAndExecute = fakeStrategy("plan-and-execute", calls);
+  let routerCalls = 0;
   const { server, url } = await startServer(
     createApp({
-      strategies: { react, alternate },
+      strategies: { react, "plan-and-execute": planAndExecute },
+      route: async () => {
+        routerCalls += 1;
+        return { route: "react", reason: "The request is direct." };
+      },
       reflectionDecorator: (strategy) => {
         reflectedStrategies.push(strategy.name);
         return {
@@ -578,20 +640,21 @@ test("POST /chat selects named strategies and reflects only when requested", asy
   );
   t.after(() => closeServer(server));
 
-  const alternateResponse = await fetch(`${url}/chat`, {
+  const overrideResponse = await fetch(`${url}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       message: "Investigate",
       userId: "operator-1",
-      strategy: "alternate",
+      strategy: "plan-and-execute",
     }),
   });
-  assert.equal(alternateResponse.status, 200);
+  assert.equal(overrideResponse.status, 200);
   assert.equal(
-    (await alternateResponse.json() as ReasoningResult).answer,
-    "alternate: Investigate",
+    (await overrideResponse.json() as ReasoningResult).answer,
+    "plan-and-execute: Investigate",
   );
+  assert.equal(routerCalls, 0);
 
   const reflectedResponse = await fetch(`${url}/chat`, {
     method: "POST",
@@ -763,7 +826,7 @@ test("POST /chat exposes the real promptTokens reported by the strategy", async 
     async run() {
       return {
         answer: "ok",
-        trace: [{ sequence: 0, type: "answer", content: "ok" }],
+        trace: [{ sequence: 0, type: "answer", node: "response", content: "ok" }],
         metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 123 },
       };
     },
