@@ -9,7 +9,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
-import { createModel } from "./model.js";
+import { createModel, ModelUnavailableError } from "./model.js";
 import { ModelCallCounter, startTimer } from "./metrics.js";
 import {
   reasoningInputSchema,
@@ -236,6 +236,7 @@ export function createReactStrategy(
           metrics: reactMetrics(counter, elapsed()),
         });
       } catch (error) {
+        if (error instanceof ModelUnavailableError) throw error;
         const answer = failureMessage(error);
         return reasoningResultSchema.parse({
           answer: `[FAILED] ${answer}`,

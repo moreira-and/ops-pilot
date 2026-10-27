@@ -1,6 +1,7 @@
 import express, { type Express, type Request, type Response } from "express";
 import { z } from "zod";
 import { strategyRegistry } from "../agents/index.js";
+import { ModelUnavailableError } from "../agents/model.js";
 import { withReflection } from "../agents/reflection.js";
 import {
   createProductionGraph,
@@ -100,6 +101,10 @@ function sendFailure(
   }
   if (error instanceof ChatStrategyFailedError) {
     response.status(500).json({ error: "Internal server error" });
+    return;
+  }
+  if (error instanceof ModelUnavailableError) {
+    response.status(503).json({ error: "Model unavailable" });
     return;
   }
   if (error instanceof StrategyTimeoutError) {

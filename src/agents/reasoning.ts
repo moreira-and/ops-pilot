@@ -64,6 +64,12 @@ export const traceEventSchema = z.union([
     messagesSummarized: z.number().int().positive(),
     summarizedThrough: z.number().int().positive(),
   }),
+  traceBaseSchema.extend({
+    type: z.literal("fallback"),
+    from: z.string().min(1),
+    to: z.string().min(1),
+    reason: z.string().min(1),
+  }),
   traceBaseSchema.extend({ type: z.literal("answer"), content: z.string() }),
 ]);
 
@@ -71,6 +77,7 @@ export const reasoningMetricsSchema = z.object({
   llmCalls: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(),
   promptTokens: z.number().int().nonnegative().optional(),
+  modelUsed: z.string().min(1).optional(),
 });
 
 export const reasoningResultSchema = z.object({

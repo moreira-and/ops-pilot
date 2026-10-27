@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ReasoningResult, ReasoningStrategy } from "./reasoning.js";
 import { createProductionGraph } from "./production-graph.js";
+import { recordFallback, recordModelUsed } from "./model-usage.js";
 
 const routes = ["react", "plan-and-execute", "reflect:react"] as const;
 type Route = (typeof routes)[number];
@@ -167,4 +168,52 @@ test("preserves strategy failures as failures instead of returning a successful 
   const result = await graph.run("Inspect the alert");
 
   assert.match(result.answer, /^\[FAILED\]/);
+});
+
+test("fallback events and modelUsed are reported from the model usage scope", async () => {
+  const strategy: ReasoningStrategy = {
+    name: "react",
+    async run() {
+      recordFallback({ from: "a/primary", to: "b/backup", reason: "HTTP 503" });
+      recordModelUsed("b/backup");
+      return {
+        answer: "done",
+        trace: [{ sequence: 0, type: "answer", node: "answer", content: "done" }],
+        metrics: { llmCalls: 1, latencyMs: 1 },
+      };
+    },
+  };
+  const graph = createProductionGraph({
+    strategies: { react: strategy },
+    route: async () => ({ route: "react", reason: "Direct request route." }),
+  });
+
+  const result = await graph.run("Inspect the alert");
+
+  assert.equal(result.metrics.modelUsed, "b/backup");
+  assert.deepEqual(result.trace.map((event) => event.type), [
+    "observation",
+    "route",
+    "fallback",
+    "answer",
+  ]);
+  assert.deepEqual(result.trace.map((event) => event.sequence), [0, 1, 2, 3]);
+  assert.deepEqual(result.trace[2], {
+    sequence: 2,
+    node: "model",
+    type: "fallback",
+    from: "a/primary",
+    to: "b/backup",
+    reason: "HTTP 503",
+  });
+});
+
+test("runs without fallback expose no fallback event", async () => {
+  const graph = createProductionGraph({
+    strategies: strategies([]),
+    route: async () => ({ route: "react", reason: "Direct request route." }),
+  });
+  const result = await graph.run("Inspect the alert");
+  assert.equal(result.trace.some(({ type }) => type === "fallback"), false);
+  assert.equal(result.metrics.modelUsed, undefined);
 });

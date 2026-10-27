@@ -7,6 +7,7 @@ import {
   createApp as createExpressApp,
   type ChatServerOptions,
 } from "./server.js";
+import { ModelUnavailableError } from "../agents/model.js";
 import {
   ContextBudgetConfigurationError,
   type ContextBudget,
@@ -840,4 +841,26 @@ test("POST /chat exposes the real promptTokens reported by the strategy", async 
   });
   const body = await response.json() as { metrics: { promptTokens: number } };
   assert.equal(body.metrics.promptTokens, 123);
+});
+
+test("POST /chat answers 503 without internal details when no model is available", async (t) => {
+  const unavailable: ReasoningStrategy = {
+    name: "react",
+    async run() {
+      throw new ModelUnavailableError(
+        Object.assign(new Error("secret provider detail"), { status: 503 }),
+      );
+    },
+  };
+  const { server, url } = await startServer(createApp({ strategies: { react: unavailable } }));
+  t.after(() => closeServer(server));
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Summarize the alert", userId: "operator-1" }),
+  });
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "Model unavailable" });
 });

@@ -3,6 +3,7 @@ import test from "node:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
 import { buildContext } from "../context/context-builder.js";
+import { ModelUnavailableError } from "./model.js";
 import { ModelCallCounter } from "./metrics.js";
 import { createReactStrategy, MEMORY_CAPABILITY_PROMPT } from "./react.js";
 
@@ -165,4 +166,17 @@ test("ReAct reports real promptTokens when usage is reported and omits it otherw
   assert.equal(withUsage.metrics.promptTokens, 42);
   const without = await reactWithUsage(undefined).run("q");
   assert.equal("promptTokens" in without.metrics, false);
+});
+
+test("ReAct rethrows ModelUnavailableError instead of returning a failed result", async () => {
+  const strategy = createReactStrategy({
+    tools: [],
+    modelFactory: () => new ChatOpenAI({ model: "test/model" }),
+    agentFactory: () => ({
+      async invoke() {
+        throw new ModelUnavailableError();
+      },
+    }),
+  });
+  await assert.rejects(strategy.run("Check the alert"), ModelUnavailableError);
 });

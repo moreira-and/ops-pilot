@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createModel } from "./model.js";
+import { createModel, ModelUnavailableError } from "./model.js";
 import { ModelCallCounter, startTimer, sumPromptTokens } from "./metrics.js";
 import {
   reasoningInputSchema,
@@ -179,6 +179,7 @@ export function withReflection(
             await critic(request, candidateForCritic, criticCounter),
           );
         } catch (error) {
+          if (error instanceof ModelUnavailableError) throw error;
           const message = criticFailureMessage(error);
           const failureAnswer = `[FAILED] Reflection failed: ${message}`;
           trace.push(

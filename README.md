@@ -53,7 +53,7 @@ npm install
 
 ## Configuração e execução
 
-O Node carrega automaticamente as variáveis de um arquivo `.env`, quando presente. Configure `OPENROUTER_API_KEY` e `OPENROUTES_MODEL` no ambiente local para executar os agentes com o OpenRouter. Não versione credenciais. A variável opcional `PORT` define a porta HTTP; o padrão é `3000`.
+O Node carrega automaticamente as variáveis de um arquivo `.env`, quando presente. Configure `OPENROUTER_API_KEY` e `OPENROUTES_MODEL` no ambiente local para executar os agentes com o OpenRouter. Não versione credenciais. A variável opcional `OPENROUTER_MODEL_FALLBACK` define um modelo reserva: cada modelo é tentado até 2 vezes em falhas transitórias (timeout, rede, HTTP 408/429/5xx) e, se o primário esgotar as tentativas, o reserva é usado. O trace ganha um evento `fallback` e `metrics.modelUsed` informa o modelo que respondeu. Se nenhum modelo responder, a API retorna `503`. A variável opcional `PORT` define a porta HTTP; o padrão é `3000`.
 
 Inicie a API:
 

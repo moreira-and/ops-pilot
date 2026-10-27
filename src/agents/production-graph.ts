@@ -2,6 +2,7 @@ import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import { createModel } from "./model.js";
+import { runWithModelUsage } from "./model-usage.js";
 import { ModelCallCounter, startTimer, sumPromptTokens } from "./metrics.js";
 import {
   reasoningMetricsSchema,
@@ -252,18 +253,34 @@ export function createProductionGraph(
       const parsedOverride = strategyOverride === undefined
         ? undefined
         : productionRouteSchema.parse(strategyOverride);
-      const state = await graph.invoke({
-        input: parsedInput,
-        startedAt: performance.now(),
-        options: parsedOptions,
-        strategyOverride: parsedOverride,
-        reflect: shouldReflect,
-      });
+      const { value: state, usage } = await runWithModelUsage(() =>
+        graph.invoke({
+          input: parsedInput,
+          startedAt: performance.now(),
+          options: parsedOptions,
+          strategyOverride: parsedOverride,
+          reflect: shouldReflect,
+        })
+      );
       const result = reasoningResultSchema.parse(state.result);
+      const answerIndex = result.trace.findIndex(({ type }) => type === "answer");
+      const insertAt = answerIndex === -1 ? result.trace.length : answerIndex;
+      const trace = [
+        ...result.trace.slice(0, insertAt),
+        ...usage.fallbacks.map((fallback) => ({
+          type: "fallback" as const,
+          node: "model",
+          sequence: 0,
+          ...fallback,
+        })),
+        ...result.trace.slice(insertAt),
+      ].map((event, sequence) => traceEventSchema.parse({ ...event, sequence }));
       return reasoningResultSchema.parse({
         ...result,
+        trace,
         metrics: {
           ...result.metrics,
+          ...(usage.modelUsed ? { modelUsed: usage.modelUsed } : {}),
           latencyMs: Math.max(result.metrics.latencyMs, started()),
         },
       });

@@ -1,7 +1,7 @@
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { z } from "zod";
 import { DomainError } from "../services/domain-error.js";
-import { createModel } from "./model.js";
+import { createModel, ModelUnavailableError } from "./model.js";
 import { startTimer } from "./metrics.js";
 import {
   reasoningInputSchema,
@@ -464,6 +464,13 @@ export function createPlanAndExecuteStrategy(
           metrics: { llmCalls, latencyMs: elapsed() },
         });
       } catch (error) {
+        if (error instanceof ModelUnavailableError) throw error;
+        if (
+          error instanceof ModelInvocationError &&
+          error.cause instanceof ModelUnavailableError
+        ) {
+          throw error.cause;
+        }
         const answer = `[FAILED] Plan-and-Execute failed: ${errorMessage(error)}`;
         emit({ type: "observation", content: answer, error: true });
         emit({ type: "answer", content: answer });
