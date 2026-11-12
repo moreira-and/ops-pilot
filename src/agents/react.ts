@@ -161,10 +161,12 @@ function toMessages(value: unknown): BaseMessage[] {
 
 function reactMetrics(counter: ModelCallCounter, latencyMs: number) {
   const promptTokens = counter.promptTokens;
+  const completionTokens = counter.completionTokens;
   return {
     llmCalls: counter.count,
     latencyMs,
     ...(promptTokens === undefined ? {} : { promptTokens }),
+    ...(completionTokens === undefined ? {} : { completionTokens }),
   };
 }
 

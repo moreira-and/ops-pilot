@@ -2,8 +2,12 @@ import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import { createModel } from "./model.js";
-import { runWithModelUsage } from "./model-usage.js";
-import { ModelCallCounter, startTimer, sumPromptTokens } from "./metrics.js";
+import { getModelUsageSnapshot, runWithModelUsage } from "./model-usage.js";
+import {
+  ModelCallCounter,
+  sumCompletionTokens,
+  sumPromptTokens,
+} from "./metrics.js";
 import {
   reasoningMetricsSchema,
   reasoningOptionsSchema,
@@ -16,6 +20,10 @@ import {
 } from "./reasoning.js";
 import { strategyRegistry } from "./index.js";
 import { withReflection } from "./reflection.js";
+import type {
+  RequestExecutionContext,
+  RequestTraceService,
+} from "../services/request-trace-service.js";
 
 export const productionRouteSchema = z.enum([
   "react",
@@ -47,6 +55,7 @@ export interface ProductionGraph {
     options?: ReasoningOptions,
     strategyOverride?: string,
     reflect?: boolean,
+    requestContext?: RequestExecutionContext,
   ): Promise<ReasoningResult>;
 }
 
@@ -58,6 +67,7 @@ export interface ProductionGraphDependencies {
   ) => Promise<unknown>;
   modelFactory?: typeof createModel;
   reflectionDecorator?: (strategy: ReasoningStrategy) => ReasoningStrategy;
+  requestTraceService?: RequestTraceService;
 }
 
 const routeNodeNames: Record<ProductionRoute, string> = {
@@ -117,6 +127,10 @@ export function createProductionGraph(
       reducer: (_previous, next) => next,
       default: () => undefined,
     }),
+    routerCompletionTokens: Annotation<number | undefined>({
+      reducer: (_previous, next) => next,
+      default: () => undefined,
+    }),
     strategyResult: Annotation<ReasoningResult>({
       reducer: (_previous, next) => next,
       default: emptyResult,
@@ -129,7 +143,76 @@ export function createProductionGraph(
       reducer: (_previous, next) => next,
       default: emptyResult,
     }),
+    requestContext: Annotation<RequestExecutionContext | undefined>({
+      reducer: (_previous, next) => next,
+      default: () => undefined,
+    }),
   });
+
+  const answerNode = async (state: typeof GraphState.State) => {
+    const strategyResult = reasoningResultSchema.parse(state.strategyResult);
+    const usage = getModelUsageSnapshot();
+    const promptTokens = sumPromptTokens(
+      state.routerPromptTokens,
+      strategyResult.metrics.promptTokens,
+    );
+    const completionTokens = sumCompletionTokens(
+      state.routerCompletionTokens,
+      strategyResult.metrics.completionTokens,
+    );
+    const metrics = reasoningMetricsSchema.parse({
+      llmCalls: state.routerCalls + strategyResult.metrics.llmCalls,
+      latencyMs: Math.max(
+        strategyResult.metrics.latencyMs,
+        performance.now() - state.startedAt,
+      ),
+      ...(promptTokens === undefined ? {} : { promptTokens }),
+      ...(completionTokens === undefined ? {} : { completionTokens }),
+      ...(usage.modelUsed ? { modelUsed: usage.modelUsed } : {}),
+    });
+    const fallbackEvents = usage.fallbacks.map((fallback) =>
+      traceEventSchema.parse({
+        type: "fallback",
+        node: "model",
+        sequence: 0,
+        ...fallback,
+      })
+    );
+    const answerEvent = traceEventSchema.parse({
+      sequence: 0,
+      node: "response",
+      type: "answer",
+      content: strategyResult.answer,
+    });
+    const trace = [
+      ...state.trace.filter((event) => event.type !== "answer"),
+      ...fallbackEvents,
+      answerEvent,
+    ].map((event, sequence) =>
+      traceEventSchema.parse({ ...event, sequence })
+    );
+    const result = reasoningResultSchema.parse({
+      answer: strategyResult.answer,
+      trace,
+      metrics,
+    });
+
+    if (state.requestContext && dependencies.requestTraceService) {
+      const persisted = dependencies.requestTraceService.complete(
+        state.requestContext,
+        {
+          route: state.route,
+          metrics,
+          trace,
+        },
+      );
+      if (!persisted) {
+        throw new Error("Request trace completion was not persisted.");
+      }
+    }
+
+    return { trace, result };
+  };
 
   const graph = new StateGraph(GraphState)
     .addNode("context", async (state) => ({
@@ -146,6 +229,7 @@ export function createProductionGraph(
       let decision: RouteDecision;
       let routerCalls = 0;
       let routerPromptTokens: number | undefined;
+      let routerCompletionTokens: number | undefined;
 
       if (state.strategyOverride !== undefined) {
         decision = {
@@ -168,6 +252,7 @@ export function createProductionGraph(
         decision = routeDecisionSchema.parse(raw);
         routerCalls = counter.count || 1;
         routerPromptTokens = counter.promptTokens;
+        routerCompletionTokens = counter.completionTokens;
       }
 
       const source = state.strategyOverride === undefined ? "router" : "override";
@@ -185,6 +270,7 @@ export function createProductionGraph(
         source,
         routerCalls,
         routerPromptTokens,
+        routerCompletionTokens,
         trace: [...state.trace, routeEvent],
       };
     })
@@ -197,41 +283,7 @@ export function createProductionGraph(
     .addNode("strategy-reflect-react", (state) =>
       executeStrategy(state, "reflect:react", strategies, reflect),
     )
-    .addNode("response", async (state) => {
-      const strategyResult = reasoningResultSchema.parse(state.strategyResult);
-      const trace = [
-        ...state.trace.filter((event) => event.type !== "answer"),
-        traceEventSchema.parse({
-          sequence: 0,
-          node: "response",
-          type: "answer",
-          content: strategyResult.answer,
-        }),
-      ].map((event, sequence) =>
-        traceEventSchema.parse({ ...event, sequence })
-      );
-      const metrics = reasoningMetricsSchema.parse({
-        llmCalls: state.routerCalls + strategyResult.metrics.llmCalls,
-        latencyMs: Math.max(0, performance.now() - state.startedAt),
-        ...(sumPromptTokens(
-          state.routerPromptTokens,
-          strategyResult.metrics.promptTokens,
-        ) === undefined
-          ? {}
-          : {
-            promptTokens: sumPromptTokens(
-              state.routerPromptTokens,
-              strategyResult.metrics.promptTokens,
-            ),
-          }),
-      });
-      const result = reasoningResultSchema.parse({
-        answer: strategyResult.answer,
-        trace,
-        metrics,
-      });
-      return { trace, result };
-    })
+    .addNode("response", answerNode)
     .addEdge(START, "context")
     .addEdge("context", "router")
     .addConditionalEdges("router", (state) => routeNodeNames[state.route], {
@@ -246,44 +298,31 @@ export function createProductionGraph(
     .compile();
 
   return {
-    async run(input, options, strategyOverride, shouldReflect = false) {
-      const started = startTimer();
+    async run(
+      input,
+      options,
+      strategyOverride,
+      shouldReflect = false,
+      requestContext,
+    ) {
+      const startedAt = performance.now();
       const parsedOptions = reasoningOptionsSchema.parse(options ?? {});
       const parsedInput = z.string().trim().min(1).parse(input);
       const parsedOverride = strategyOverride === undefined
         ? undefined
         : productionRouteSchema.parse(strategyOverride);
-      const { value: state, usage } = await runWithModelUsage(() =>
+      const { value: state } = await runWithModelUsage(() =>
         graph.invoke({
           input: parsedInput,
-          startedAt: performance.now(),
+          startedAt,
           options: parsedOptions,
           strategyOverride: parsedOverride,
           reflect: shouldReflect,
+          requestContext,
         })
       );
       const result = reasoningResultSchema.parse(state.result);
-      const answerIndex = result.trace.findIndex(({ type }) => type === "answer");
-      const insertAt = answerIndex === -1 ? result.trace.length : answerIndex;
-      const trace = [
-        ...result.trace.slice(0, insertAt),
-        ...usage.fallbacks.map((fallback) => ({
-          type: "fallback" as const,
-          node: "model",
-          sequence: 0,
-          ...fallback,
-        })),
-        ...result.trace.slice(insertAt),
-      ].map((event, sequence) => traceEventSchema.parse({ ...event, sequence }));
-      return reasoningResultSchema.parse({
-        ...result,
-        trace,
-        metrics: {
-          ...result.metrics,
-          ...(usage.modelUsed ? { modelUsed: usage.modelUsed } : {}),
-          latencyMs: Math.max(result.metrics.latencyMs, started()),
-        },
-      });
+      return result;
     },
   };
 }

@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { createModel, ModelUnavailableError } from "./model.js";
-import { ModelCallCounter, startTimer, sumPromptTokens } from "./metrics.js";
+import {
+  ModelCallCounter,
+  startTimer,
+  sumCompletionTokens,
+  sumPromptTokens,
+} from "./metrics.js";
 import {
   reasoningInputSchema,
   reasoningMetricsSchema,
@@ -120,6 +125,7 @@ export function withReflection(
       const criticCounter = new ModelCallCounter();
       let strategyCalls = 0;
       let strategyPromptTokens: number | undefined;
+      let strategyCompletionTokens: number | undefined;
 
       const appendTrace = (events: readonly TraceEvent[]) => {
         for (const event of events) {
@@ -135,6 +141,8 @@ export function withReflection(
 
       const withTokens = (promptTokens: number | undefined) =>
         promptTokens === undefined ? {} : { promptTokens };
+      const withCompletionTokens = (completionTokens: number | undefined) =>
+        completionTokens === undefined ? {} : { completionTokens };
 
       const makeResult = (answer: string): ReasoningResult =>
         reasoningResultSchema.parse({
@@ -146,6 +154,12 @@ export function withReflection(
             ...withTokens(
               sumPromptTokens(strategyPromptTokens, criticCounter.promptTokens),
             ),
+            ...withCompletionTokens(
+              sumCompletionTokens(
+                strategyCompletionTokens,
+                criticCounter.completionTokens,
+              ),
+            ),
           }),
         });
 
@@ -154,6 +168,10 @@ export function withReflection(
       );
       strategyCalls += candidate.metrics.llmCalls;
       strategyPromptTokens = sumPromptTokens(strategyPromptTokens, candidate.metrics.promptTokens);
+      strategyCompletionTokens = sumCompletionTokens(
+        strategyCompletionTokens,
+        candidate.metrics.completionTokens,
+      );
       appendTrace(candidate.trace);
 
       if (candidate.answer.startsWith("[FAILED]") || maxReflections === 0) {
@@ -164,6 +182,7 @@ export function withReflection(
             llmCalls: strategyCalls,
             latencyMs: elapsed(),
             ...withTokens(strategyPromptTokens),
+            ...withCompletionTokens(strategyCompletionTokens),
           },
         });
       }
@@ -221,6 +240,10 @@ export function withReflection(
         );
         strategyCalls += candidate.metrics.llmCalls;
         strategyPromptTokens = sumPromptTokens(strategyPromptTokens, candidate.metrics.promptTokens);
+        strategyCompletionTokens = sumCompletionTokens(
+          strategyCompletionTokens,
+          candidate.metrics.completionTokens,
+        );
         appendTrace(candidate.trace);
         if (candidate.answer.startsWith("[FAILED]")) {
           return makeResult(candidate.answer);

@@ -77,6 +77,7 @@ export const reasoningMetricsSchema = z.object({
   llmCalls: z.number().int().nonnegative(),
   latencyMs: z.number().nonnegative(),
   promptTokens: z.number().int().nonnegative().optional(),
+  completionTokens: z.number().int().nonnegative().optional(),
   modelUsed: z.string().min(1).optional(),
 });
 

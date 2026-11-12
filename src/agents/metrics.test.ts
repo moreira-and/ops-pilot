@@ -16,23 +16,37 @@ test("measures elapsed duration as a non-negative value", async () => {
   assert.ok(elapsed() >= 0);
 });
 
-test("sums provider-reported prompt tokens per run and ignores repeats of a run", () => {
+test("sums provider-reported input and output tokens per run and ignores repeated runs", () => {
   const counter = new ModelCallCounter();
   assert.equal(counter.promptTokens, undefined);
-  counter.handleLLMEnd({ generations: [], llmOutput: { tokenUsage: { promptTokens: 10 } } }, "a");
-  counter.handleLLMEnd({ generations: [], llmOutput: { tokenUsage: { promptTokens: 10 } } }, "a");
+  assert.equal(counter.completionTokens, undefined);
   counter.handleLLMEnd({
-    generations: [[{ text: "", message: { usage_metadata: { input_tokens: 5 } } } as never]],
+    generations: [],
+    llmOutput: { tokenUsage: { promptTokens: 10, completionTokens: 3 } },
+  }, "a");
+  counter.handleLLMEnd({
+    generations: [],
+    llmOutput: { tokenUsage: { promptTokens: 10, completionTokens: 3 } },
+  }, "a");
+  counter.handleLLMEnd({
+    generations: [[{
+      text: "",
+      message: { usage_metadata: { input_tokens: 5, output_tokens: 2 } },
+    } as never]],
   }, "b");
   assert.equal(counter.promptTokens, 15);
+  assert.equal(counter.completionTokens, 5);
 });
 
-test("leaves prompt tokens unavailable when usage is absent or malformed", () => {
+test("leaves token counts unavailable when usage is absent or malformed", () => {
   const counter = new ModelCallCounter();
   counter.handleLLMEnd({ generations: [] }, "a");
-  counter.handleLLMEnd({ generations: [], llmOutput: { tokenUsage: { promptTokens: "x" } } }, "b");
-  counter.handleLLMEnd({ generations: [], llmOutput: { tokenUsage: { promptTokens: -1 } } }, "c");
+  counter.handleLLMEnd({
+    generations: [],
+    llmOutput: { tokenUsage: { promptTokens: "x", completionTokens: -1 } },
+  }, "b");
   assert.equal(counter.promptTokens, undefined);
+  assert.equal(counter.completionTokens, undefined);
 });
 
 test("sumPromptTokens is undefined only when nothing was reported", () => {

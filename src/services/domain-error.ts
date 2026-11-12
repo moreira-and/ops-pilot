@@ -20,9 +20,21 @@ export class ConversationNotFoundError extends EntityNotFoundError {
   }
 }
 
+export class RequestNotFoundError extends EntityNotFoundError {
+  constructor(id: string) {
+    super("Request", id);
+  }
+}
+
 export class ValidationDomainError extends DomainError {
   constructor(message: string) {
     super(message, "VALIDATION_ERROR");
+  }
+}
+
+export class InvalidSinceParameterError extends ValidationDomainError {
+  constructor() {
+    super("Invalid since parameter");
   }
 }
 

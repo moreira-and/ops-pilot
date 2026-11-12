@@ -138,7 +138,7 @@ test("ReAct returns explicit failure trace and metrics when graph execution fail
   assert.ok(result.metrics.latencyMs >= 0);
 });
 
-function reactWithUsage(usage: number | undefined) {
+function reactWithUsage(usage: { prompt?: number; completion?: number } | undefined) {
   return createReactStrategy({
     tools: [],
     modelFactory: () => new ChatOpenAI({ model: "test/model" }),
@@ -149,7 +149,19 @@ function reactWithUsage(usage: number | undefined) {
             callback.recordInvocation("run-1");
             if (usage !== undefined) {
               callback.handleLLMEnd(
-                { generations: [], llmOutput: { tokenUsage: { promptTokens: usage } } },
+                {
+                  generations: [],
+                  llmOutput: {
+                    tokenUsage: {
+                      ...(usage.prompt === undefined
+                        ? {}
+                        : { promptTokens: usage.prompt }),
+                      ...(usage.completion === undefined
+                        ? {}
+                        : { completionTokens: usage.completion }),
+                    },
+                  },
+                },
                 "run-1",
               );
             }
@@ -161,11 +173,15 @@ function reactWithUsage(usage: number | undefined) {
   });
 }
 
-test("ReAct reports real promptTokens when usage is reported and omits it otherwise", async () => {
-  const withUsage = await reactWithUsage(42).run("q");
+test("ReAct reports input/output token usage and omits unreported metrics", async () => {
+  const withUsage = await reactWithUsage({ prompt: 42, completion: 9 }).run("q");
   assert.equal(withUsage.metrics.promptTokens, 42);
-  const without = await reactWithUsage(undefined).run("q");
-  assert.equal("promptTokens" in without.metrics, false);
+  assert.equal(withUsage.metrics.completionTokens, 9);
+  const without = await reactWithUsage({ prompt: 42 }).run("q");
+  assert.equal("completionTokens" in without.metrics, false);
+  const noUsage = await reactWithUsage(undefined).run("q");
+  assert.equal("promptTokens" in noUsage.metrics, false);
+  assert.equal("completionTokens" in noUsage.metrics, false);
 });
 
 test("ReAct rethrows ModelUnavailableError instead of returning a failed result", async () => {

@@ -3,6 +3,8 @@ import test from "node:test";
 import type { ReasoningResult, ReasoningStrategy } from "./reasoning.js";
 import { createProductionGraph } from "./production-graph.js";
 import { recordFallback, recordModelUsed } from "./model-usage.js";
+import { randomUUID } from "node:crypto";
+import type { RequestTraceCompletionInput } from "../services/request-trace-service.js";
 
 const routes = ["react", "plan-and-execute", "reflect:react"] as const;
 type Route = (typeof routes)[number];
@@ -216,4 +218,103 @@ test("runs without fallback expose no fallback event", async () => {
   const result = await graph.run("Inspect the alert");
   assert.equal(result.trace.some(({ type }) => type === "fallback"), false);
   assert.equal(result.metrics.modelUsed, undefined);
+});
+
+test("final response node persists the final route, metrics and trace", async () => {
+  const saved: Array<{
+    context: { requestId: string; userId: string };
+    input: RequestTraceCompletionInput;
+  }> = [];
+  const context = {
+    requestId: randomUUID(),
+    userId: "operator-1",
+    startedAt: new Date(),
+  };
+  const strategy: ReasoningStrategy = {
+    name: "react",
+    async run() {
+      recordModelUsed("provider/model");
+      recordFallback({
+        from: "provider/primary",
+        to: "provider/model",
+        reason: "HTTP 503",
+      });
+      return {
+        answer: "done",
+        trace: [],
+        metrics: {
+          llmCalls: 1,
+          latencyMs: 1,
+          promptTokens: 7,
+          completionTokens: 3,
+        },
+      };
+    },
+  };
+  const graph = createProductionGraph({
+    strategies: { react: strategy },
+    route: async (_input, counter) => {
+      counter.recordInvocation("router-call");
+      counter.handleLLMEnd({
+        generations: [],
+        llmOutput: { tokenUsage: { promptTokens: 11, completionTokens: 5 } },
+      }, "router-call");
+      return { route: "react", reason: "Direct request." };
+    },
+    requestTraceService: {
+      complete(requestContext, input) {
+        saved.push({ context: requestContext, input });
+        return true;
+      },
+    },
+  });
+
+  const result = await graph.run(
+    "Inspect the alert",
+    { userId: context.userId },
+    undefined,
+    false,
+    context,
+  );
+
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0]?.context.requestId, context.requestId);
+  assert.equal(saved[0]?.context.userId, context.userId);
+  assert.equal(saved[0]?.input.route, "react");
+  assert.equal(saved[0]?.input.metrics.modelUsed, "provider/model");
+  assert.equal(saved[0]?.input.metrics.promptTokens, 18);
+  assert.equal(saved[0]?.input.metrics.completionTokens, 8);
+  assert.deepEqual(
+    saved[0]?.input.trace.map((event) => event.type),
+    ["observation", "route", "fallback", "answer"],
+  );
+  assert.deepEqual(result, {
+    answer: "done",
+    trace: saved[0]?.input.trace,
+    metrics: saved[0]?.input.metrics,
+  });
+});
+
+test("final response node fails when trace persistence is not completed", async () => {
+  const calls: string[] = [];
+  const graph = createProductionGraph({
+    strategies: { react: fakeStrategy("react", calls) },
+    route: async () => ({ route: "react", reason: "Direct request." }),
+    requestTraceService: { complete: () => false },
+  });
+
+  await assert.rejects(
+    graph.run(
+      "Inspect the alert",
+      {},
+      undefined,
+      false,
+      {
+        requestId: randomUUID(),
+        userId: "operator-1",
+        startedAt: new Date(),
+      },
+    ),
+    /Request trace completion was not persisted/,
+  );
 });

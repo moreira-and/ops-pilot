@@ -21,6 +21,15 @@ export async function runWithModelUsage<T>(
   return { value, usage };
 }
 
+export function getModelUsageSnapshot(): ModelUsage {
+  const usage = storage.getStore();
+  if (!usage) return { fallbacks: [] };
+  return {
+    ...(usage.modelUsed ? { modelUsed: usage.modelUsed } : {}),
+    fallbacks: usage.fallbacks.map((fallback) => ({ ...fallback })),
+  };
+}
+
 export function recordModelUsed(model: string): void {
   const usage = storage.getStore();
   if (usage) usage.modelUsed = model;

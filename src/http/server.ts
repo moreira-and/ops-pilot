@@ -26,9 +26,28 @@ import {
   type MemoryRecallStore,
 } from "../services/chat-service.js";
 import type { ConversationStore } from "../services/conversation-store.js";
-import { ConversationNotFoundError } from "../services/domain-error.js";
+import {
+  ConversationNotFoundError,
+  RequestNotFoundError,
+} from "../services/domain-error.js";
+import {
+  createRequestStatusService,
+  requestStatusQuerySchema,
+  requestStatusResponseSchema,
+} from "../services/request-status-service.js";
+import {
+  LOCAL_MODEL_PRICES,
+  type ModelPrice,
+} from "../services/model-pricing.js";
+import { createRequestTraceService } from "../services/request-trace-service.js";
+import {
+  requestTraceRecordSchema,
+  type RequestTraceStore,
+} from "../services/request-trace-store.js";
 import type { Summarizer } from "../services/summarizer.js";
+import type { StructuredLogger } from "../obs/logger.js";
 import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
+import { SqliteRequestTraceStore } from "../store/sqlite-request-trace-store.js";
 
 const chatRequestSchema = z.object({
   message: z.string().trim().min(1),
@@ -39,6 +58,7 @@ const chatRequestSchema = z.object({
 });
 
 const chatResponseSchema = reasoningResultSchema.extend({
+  requestId: z.string().uuid(),
   conversationId: z.string().trim().min(1),
   metrics: reasoningMetricsSchema.extend({
     historyMessages: z.number().int().min(0).max(8),
@@ -61,6 +81,10 @@ export interface ChatServerOptions {
   contextBudget?: ContextBudget;
   env?: Pick<NodeJS.ProcessEnv, "CONTEXT_BUDGET">;
   conversationStore?: ConversationStore;
+  requestTraceStore?: RequestTraceStore;
+  requestTraceService?: ReturnType<typeof createRequestTraceService>;
+  modelPrices?: readonly ModelPrice[];
+  logger?: StructuredLogger;
   memoryStore?: MemoryRecallStore;
   learningService?: ChatLearningService;
   summarizer?: Summarizer;
@@ -94,24 +118,34 @@ async function runWithTimeout<T>(
 function sendFailure(
   error: unknown,
   response: Response,
+  requestId?: string,
 ): void {
+  const send = (status: number, body: Record<string, unknown>) => {
+    response.status(status).json(
+      requestId ? { ...body, requestId } : body,
+    );
+  };
   if (error instanceof ConversationNotFoundError) {
-    response.status(404).json({ error: "Conversation not found" });
+    send(404, { error: "Conversation not found" });
+    return;
+  }
+  if (error instanceof RequestNotFoundError) {
+    send(404, { error: "Request not found" });
     return;
   }
   if (error instanceof ChatStrategyFailedError) {
-    response.status(500).json({ error: "Internal server error" });
+    send(500, { error: "Internal server error" });
     return;
   }
   if (error instanceof ModelUnavailableError) {
-    response.status(503).json({ error: "Model unavailable" });
+    send(503, { error: "Model unavailable" });
     return;
   }
   if (error instanceof StrategyTimeoutError) {
-    response.status(504).json({ error: "Strategy execution timed out" });
+    send(504, { error: "Strategy execution timed out" });
     return;
   }
-  response.status(500).json({ error: "Internal server error" });
+  send(500, { error: "Internal server error" });
 }
 
 export function createApp(options: ChatServerOptions = {}): Express {
@@ -121,12 +155,21 @@ export function createApp(options: ChatServerOptions = {}): Express {
   const contextBudget = options.contextBudget === undefined
     ? parseContextBudget(rawContextBudget)
     : contextBudgetSchema.parse(options.contextBudget);
+  const requestTraceStore = options.requestTraceStore ??
+    new SqliteRequestTraceStore(":memory:");
+  const requestTraceService = options.requestTraceService ??
+    createRequestTraceService(requestTraceStore, options.logger);
+  const requestStatusService = createRequestStatusService(
+    requestTraceStore,
+    options.modelPrices ?? LOCAL_MODEL_PRICES,
+  );
   const strategies = options.strategies ?? strategyRegistry;
   const reflectionDecorator = options.reflectionDecorator ?? withReflection;
   const productionGraph = createProductionGraph({
     strategies,
     route: options.route,
     reflectionDecorator,
+    requestTraceService,
   });
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const conversationStore = options.conversationStore ??
@@ -163,7 +206,12 @@ export function createApp(options: ChatServerOptions = {}): Express {
       return;
     }
 
+    let requestContext:
+      | ReturnType<typeof requestTraceService.begin>
+      | undefined;
     try {
+      requestContext = requestTraceService.begin(parsed.data.userId);
+      response.setHeader("X-Request-Id", requestContext.requestId);
       const result = await chatService.runChat(
         {
           message: parsed.data.message,
@@ -178,12 +226,58 @@ export function createApp(options: ChatServerOptions = {}): Express {
                 strategyOptions,
                 parsed.data.strategy,
                 parsed.data.reflact,
+                requestContext,
               ),
               timeoutMs,
             ),
         },
       );
-      response.status(200).json(chatResponseSchema.parse(result));
+      response.status(200).json(chatResponseSchema.parse({
+        ...result,
+        requestId: requestContext.requestId,
+      }));
+    } catch (error) {
+      if (requestContext) {
+        try {
+          requestTraceService.fail(requestContext, failureCode(error));
+        } catch (persistenceError) {
+          sendFailure(persistenceError, response, requestContext.requestId);
+          return;
+        }
+      }
+      sendFailure(error, response, requestContext?.requestId);
+    }
+  });
+
+  app.get("/requests/:id", (request: Request, response: Response) => {
+    try {
+      const requestId = request.params.id;
+      if (typeof requestId !== "string") {
+        throw new RequestNotFoundError("invalid");
+      }
+      response.status(200).json(
+        requestTraceRecordSchema.parse(requestTraceService.get(requestId)),
+      );
+    } catch (error) {
+      sendFailure(error, response);
+    }
+  });
+
+  app.get("/status", (request: Request, response: Response) => {
+    const query = requestStatusQuerySchema.safeParse({
+      since: request.query.since,
+    });
+    if (!query.success) {
+      response.status(400).json({ error: "Invalid since parameter" });
+      return;
+    }
+
+    try {
+      response.status(200).json(
+        requestStatusResponseSchema.parse(
+          requestStatusService.getStatus(query.data.since),
+        ),
+      );
     } catch (error) {
       sendFailure(error, response);
     }
@@ -211,4 +305,12 @@ export function createApp(options: ChatServerOptions = {}): Express {
   });
 
   return app;
+}
+
+function failureCode(error: unknown): string {
+  if (error instanceof ModelUnavailableError) return "MODEL_UNAVAILABLE";
+  if (error instanceof StrategyTimeoutError) return "STRATEGY_TIMEOUT";
+  if (error instanceof ChatStrategyFailedError) return "CHAT_STRATEGY_FAILED";
+  if (error instanceof ConversationNotFoundError) return "CONVERSATION_NOT_FOUND";
+  return "REQUEST_FAILED";
 }

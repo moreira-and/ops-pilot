@@ -372,25 +372,32 @@ test("returns failed regeneration explicitly and includes its metrics", async ()
   assert.equal(response.trace.filter((event) => event.type === "critique").length, 1);
 });
 
-test("reflection sums strategy and critic promptTokens, omitting them when unreported", async () => {
+test("reflection sums strategy and critic input/output tokens, omitting unreported usage", async () => {
   const reporting: ReasoningStrategy = {
     name: "reporting",
     async run() {
       const base = result("Answer supported by observations.");
       base.metrics.promptTokens = 100;
+      base.metrics.completionTokens = 100;
       return base;
     },
   };
   const critic: NonNullable<ReflectionDependencies["critique"]> = async (_i, _r, counter) => {
     counter.recordInvocation("critic-0");
     counter.handleLLMEnd(
-      { generations: [], llmOutput: { tokenUsage: { promptTokens: 20 } } },
+      {
+        generations: [],
+        llmOutput: {
+          tokenUsage: { promptTokens: 20, completionTokens: 5 },
+        },
+      },
       "critic-0",
     );
     return { approved: true, feedback: "" };
   };
   const withUsage = await withReflection(reporting, {}, { critique: critic }).run("q");
   assert.equal(withUsage.metrics.promptTokens, 120);
+  assert.equal(withUsage.metrics.completionTokens, 105);
 
   const without = await withReflection(
     sequenceStrategy(["Answer supported by observations."]),
@@ -398,4 +405,5 @@ test("reflection sums strategy and critic promptTokens, omitting them when unrep
     { critique: countingCritic([{ approved: true, feedback: "" }]) },
   ).run("q");
   assert.equal("promptTokens" in without.metrics, false);
+  assert.equal("completionTokens" in without.metrics, false);
 });

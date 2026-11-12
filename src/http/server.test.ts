@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import test from "node:test";
 import type { Server } from "node:http";
@@ -7,6 +8,7 @@ import {
   createApp as createExpressApp,
   type ChatServerOptions,
 } from "./server.js";
+import { createLogger } from "../obs/logger.js";
 import { ModelUnavailableError } from "../agents/model.js";
 import {
   ContextBudgetConfigurationError,
@@ -21,6 +23,7 @@ import type {
   ConversationMessageRole,
   ConversationStore,
 } from "../services/conversation-store.js";
+import { SqliteRequestTraceStore } from "../store/sqlite-request-trace-store.js";
 
 function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
   return {
@@ -45,11 +48,22 @@ function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
 function createApp(options: ChatServerOptions = {}) {
   return createExpressApp({
     ...options,
+    logger: options.logger ?? createLogger(() => {}),
     route: options.route ?? (async () => ({
       route: "react",
       reason: "Test router selected the direct request route.",
     })),
   });
+}
+
+async function assertCorrelatedFailure(
+  response: Response,
+  expectedError: string,
+): Promise<void> {
+  const body = await response.json() as { error: string; requestId: string };
+  assert.equal(body.error, expectedError);
+  assert.match(body.requestId, /^[0-9a-f]{8}-[0-9a-f-]{27}$/i);
+  assert.equal(response.headers.get("x-request-id"), body.requestId);
 }
 
 function fakeMemory(id: string, fact: string): RecalledMemory {
@@ -375,7 +389,7 @@ test("POST /chat rejects an unknown conversation without running a strategy", as
   });
 
   assert.equal(response.status, 404);
-  assert.deepEqual(await response.json(), { error: "Conversation not found" });
+  await assertCorrelatedFailure(response, "Conversation not found");
   assert.deepEqual(calls, []);
 });
 
@@ -400,7 +414,7 @@ test("POST /chat does not return success when message persistence fails", async 
   });
 
   assert.equal(response.status, 500);
-  assert.deepEqual(await response.json(), { error: "Internal server error" });
+  await assertCorrelatedFailure(response, "Internal server error");
 });
 
 test("POST /chat creates unique conversation IDs when none are supplied", async (t) => {
@@ -558,9 +572,7 @@ test("POST /chat returns 504 when strategy execution exceeds the deadline", asyn
   });
 
   assert.equal(response.status, 504);
-  assert.deepEqual(await response.json(), {
-    error: "Strategy execution timed out",
-  });
+  await assertCorrelatedFailure(response, "Strategy execution timed out");
 });
 
 test("POST /chat returns 500 for strategy failures and invalid results", async () => {
@@ -605,9 +617,7 @@ test("POST /chat returns 500 for strategy failures and invalid results", async (
         }),
       });
       assert.equal(response.status, 500);
-      assert.deepEqual(await response.json(), {
-        error: "Internal server error",
-      });
+      await assertCorrelatedFailure(response, "Internal server error");
     } finally {
       await closeServer(server);
     }
@@ -764,7 +774,7 @@ test("POST /chat allows empty recall and fails explicitly when recall fails", as
     body: JSON.stringify({ message: "Must fail", userId: "operator-1" }),
   });
   assert.equal(failed.status, 500);
-  assert.deepEqual(await failed.json(), { error: "Internal server error" });
+  await assertCorrelatedFailure(failed, "Internal server error");
   assert.deepEqual(calls, ["No relevant memory"]);
 });
 
@@ -862,5 +872,248 @@ test("POST /chat answers 503 without internal details when no model is available
   });
 
   assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), { error: "Model unavailable" });
+  await assertCorrelatedFailure(response, "Model unavailable");
+});
+
+test("POST /chat returns and persists a unique matching request ID", async (t) => {
+  const store = new SqliteRequestTraceStore(":memory:");
+  const calls: string[] = [];
+  const { server, url } = await startServer(createApp({
+    requestTraceStore: store,
+    strategies: { react: fakeStrategy("react", calls) },
+  }));
+  t.after(async () => {
+    await closeServer(server);
+    store.close();
+  });
+
+  const send = () => fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Inspect the alert", userId: "operator-1" }),
+  });
+  const responses = await Promise.all([send(), send()]);
+  const bodies = await Promise.all(responses.map((response) => response.json())) as Array<{
+    requestId: string;
+    metrics: { promptTokens?: number };
+  }>;
+
+  for (const [index, response] of responses.entries()) {
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-request-id"), bodies[index]?.requestId);
+    assert.equal(store.get(bodies[index]!.requestId)?.request.status, "ok");
+  }
+  assert.notEqual(bodies[0]?.requestId, bodies[1]?.requestId);
+  assert.deepEqual(calls, ["Inspect the alert", "Inspect the alert"]);
+});
+
+test("GET /requests/:id returns the request and trace in sequence order", async (t) => {
+  const store = new SqliteRequestTraceStore(":memory:");
+  const { server, url } = await startServer(createApp({
+    requestTraceStore: store,
+    strategies: { react: fakeStrategy("react", []) },
+  }));
+  t.after(async () => {
+    await closeServer(server);
+    store.close();
+  });
+
+  const chatResponse = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Inspect the alert", userId: "operator-1" }),
+  });
+  const chatBody = await chatResponse.json() as { requestId: string };
+  const response = await fetch(`${url}/requests/${chatBody.requestId}`);
+  const body = await response.json() as {
+    request: { id: string; status: string };
+    trace: Array<{ sequence: number }>;
+  };
+
+  assert.equal(response.status, 200);
+  assert.equal(body.request.id, chatBody.requestId);
+  assert.equal(body.request.status, "ok");
+  assert.deepEqual(
+    body.trace.map(({ sequence }) => sequence),
+    body.trace.map((_event, index) => index),
+  );
+  assert.deepEqual(body.trace.map(({ sequence }) => sequence), [0, 1, 2]);
+
+  const missing = await fetch(
+    `${url}/requests/00000000-0000-4000-8000-000000000001`,
+  );
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await missing.json(), { error: "Request not found" });
+});
+
+test("POST /chat preserves request ID and failure state when execution fails", async (t) => {
+  const store = new SqliteRequestTraceStore(":memory:");
+  const failed: ReasoningStrategy = {
+    name: "react",
+    async run() {
+      throw new Error("sensitive provider detail");
+    },
+  };
+  const { server, url } = await startServer(createApp({
+    requestTraceStore: store,
+    strategies: { react: failed },
+  }));
+  t.after(async () => {
+    await closeServer(server);
+    store.close();
+  });
+
+  const response = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Inspect the alert", userId: "operator-1" }),
+  });
+  const body = await response.json() as { error: string; requestId: string };
+
+  assert.equal(response.status, 500);
+  assert.equal(response.headers.get("x-request-id"), body.requestId);
+  assert.equal(store.get(body.requestId)?.request.status, "failed");
+  assert.equal(JSON.stringify(body).includes("sensitive provider detail"), false);
+});
+
+test("GET /status defaults to 24h, accepts a duration, and rejects invalid since before querying", async (t) => {
+  const store = new SqliteRequestTraceStore(":memory:");
+  const startedAt = new Date();
+  const requestId = randomUUID();
+  store.start({ id: requestId, userId: "operator-1", startedAt });
+  store.complete(requestId, {
+    route: "react",
+    modelUsed: "provider/free:free",
+    promptTokens: 12,
+    completionTokens: 4,
+    latencyMs: 25,
+    completedAt: new Date(startedAt.getTime() + 25),
+  }, []);
+  let queryCount = 0;
+  const listForStatus = store.listForStatus.bind(store);
+  store.listForStatus = (from, to) => {
+    queryCount += 1;
+    return listForStatus(from, to);
+  };
+
+  const { server, url } = await startServer(createApp({
+    requestTraceStore: store,
+  }));
+  t.after(async () => {
+    await closeServer(server);
+    store.close();
+  });
+
+  const defaultResponse = await fetch(`${url}/status`);
+  assert.equal(defaultResponse.status, 200);
+  const defaultStatus = await defaultResponse.json() as {
+    since: string;
+    total: number;
+    tokens: { input: number; output: number };
+    cost: { usd: number | null };
+  };
+  assert.equal(defaultStatus.since, "24h");
+  assert.equal(defaultStatus.total, 1);
+  assert.deepEqual(defaultStatus.tokens, { input: 12, output: 4, total: 16, unreportedRequests: 0 });
+  assert.equal(defaultStatus.cost.usd, 0);
+
+  const explicitResponse = await fetch(`${url}/status?since=1h`);
+  assert.equal(explicitResponse.status, 200);
+  assert.equal((await explicitResponse.json() as { since: string }).since, "1h");
+  assert.equal(queryCount, 2);
+
+  const invalidResponse = await fetch(`${url}/status?since=0h`);
+  assert.equal(invalidResponse.status, 400);
+  assert.deepEqual(await invalidResponse.json(), { error: "Invalid since parameter" });
+  assert.equal(queryCount, 2);
+});
+
+test("GET /status returns an empty aggregate and a 500 for store failures", async (t) => {
+  const emptyStore = new SqliteRequestTraceStore(":memory:");
+  const { server, url } = await startServer(
+    createApp({ requestTraceStore: emptyStore }),
+  );
+  t.after(async () => {
+    await closeServer(server);
+    emptyStore.close();
+  });
+
+  const response = await fetch(`${url}/status`);
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    total: number;
+    tokens: { total: number };
+    cost: { usd: number };
+    latencyMs: { p50: number | null; p95: number | null };
+  };
+  assert.equal(body.total, 0);
+  assert.equal(body.tokens.total, 0);
+  assert.equal(body.cost.usd, 0);
+  assert.deepEqual(body.latencyMs, { p50: null, p95: null });
+
+  const failingStore = new SqliteRequestTraceStore(":memory:");
+  failingStore.listForStatus = () => {
+    throw new Error("sensitive store failure");
+  };
+  const failing = await startServer(
+    createApp({ requestTraceStore: failingStore }),
+  );
+  t.after(async () => {
+    await closeServer(failing.server);
+    failingStore.close();
+  });
+  const failedResponse = await fetch(`${failing.url}/status`);
+  assert.equal(failedResponse.status, 500);
+  assert.deepEqual(await failedResponse.json(), { error: "Internal server error" });
+});
+
+test("GET /status returns grouped aggregates with null keys and matching totals", async (t) => {
+  const store = new SqliteRequestTraceStore(":memory:");
+  const startedAt = new Date();
+  const completedId = randomUUID();
+  store.start({ id: completedId, userId: "operator-1", startedAt });
+  store.complete(completedId, {
+    route: "react",
+    modelUsed: "provider/free:free",
+    promptTokens: 10,
+    completionTokens: 5,
+    latencyMs: 20,
+    completedAt: new Date(startedAt.getTime() + 20),
+  }, []);
+
+  const failedId = randomUUID();
+  store.start({
+    id: failedId,
+    userId: "operator-1",
+    startedAt: new Date(startedAt.getTime() + 1),
+  });
+  store.fail(failedId, {
+    completedAt: new Date(startedAt.getTime() + 2),
+    errorCode: "MODEL_UNAVAILABLE",
+  });
+
+  const { server, url } = await startServer(
+    createApp({ requestTraceStore: store }),
+  );
+  t.after(async () => {
+    await closeServer(server);
+    store.close();
+  });
+
+  const response = await fetch(`${url}/status`);
+  assert.equal(response.status, 200);
+  const body = await response.json() as {
+    total: number;
+    byRoute: Array<{ route: string | null; total: number; errors: number }>;
+    byModel: Array<{ modelUsed: string | null; total: number }>;
+  };
+  assert.equal(body.total, 2);
+  assert.deepEqual(body.byRoute.map(({ route }) => route), [null, "react"]);
+  assert.deepEqual(body.byModel.map(({ modelUsed }) => modelUsed), [
+    null,
+    "provider/free:free",
+  ]);
+  assert.equal(body.byRoute.reduce((total, group) => total + group.total, 0), 2);
+  assert.equal(body.byModel.reduce((total, group) => total + group.total, 0), 2);
+  assert.equal(body.byRoute[0]?.errors, 1);
 });

@@ -9,10 +9,12 @@ import {
 } from "./services/learning-service.js";
 import { SqliteConversationStore } from "./store/sqlite-conversation-store.js";
 import { SqliteMemoryStore } from "./store/sqlite-memory-store.js";
+import { SqliteRequestTraceStore } from "./store/sqlite-request-trace-store.js";
 
 if (process.argv[1]?.endsWith("/index.ts")) {
   const port = Number(process.env.PORT ?? 3000);
   const conversationStore = new SqliteConversationStore();
+  const requestTraceStore = new SqliteRequestTraceStore();
   const memoryStore = new MemoryStore(new SqliteMemoryStore(), embed);
   const learningService = createLearningService({
     extractor: createLearningExtractor(),
@@ -20,6 +22,7 @@ if (process.argv[1]?.endsWith("/index.ts")) {
   });
   createApp({
     conversationStore,
+    requestTraceStore,
     memoryStore,
     learningService,
     summarizer: createLlmSummarizer(),

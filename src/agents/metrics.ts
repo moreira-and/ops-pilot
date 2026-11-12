@@ -7,6 +7,7 @@ export class ModelCallCounter extends BaseCallbackHandler {
   private readonly runIds = new Set<string>();
 
   private readonly promptTokensByRun = new Map<string, number>();
+  private readonly completionTokensByRun = new Map<string, number>();
 
   get count(): number {
     return this.runIds.size;
@@ -20,9 +21,22 @@ export class ModelCallCounter extends BaseCallbackHandler {
     return total;
   }
 
+  get completionTokens(): number | undefined {
+    if (this.completionTokensByRun.size === 0) return undefined;
+    let total = 0;
+    for (const value of this.completionTokensByRun.values()) total += value;
+    return total;
+  }
+
   handleLLMEnd(output: LLMResult, runId: string): void {
-    const tokens = extractPromptTokens(output);
-    if (tokens !== undefined) this.promptTokensByRun.set(runId, tokens);
+    const promptTokens = extractPromptTokens(output);
+    if (promptTokens !== undefined) {
+      this.promptTokensByRun.set(runId, promptTokens);
+    }
+    const completionTokens = extractCompletionTokens(output);
+    if (completionTokens !== undefined) {
+      this.completionTokensByRun.set(runId, completionTokens);
+    }
   }
 
   recordInvocation(runId: string): void {
@@ -69,7 +83,29 @@ export function extractPromptTokens(output: LLMResult): number | undefined {
   return validTokens(message?.message?.usage_metadata?.input_tokens);
 }
 
+export function extractCompletionTokens(output: LLMResult): number | undefined {
+  const fromLlmOutput = validTokens(
+    (output.llmOutput as
+      | { tokenUsage?: { completionTokens?: unknown } }
+      | undefined)?.tokenUsage?.completionTokens,
+  );
+  if (fromLlmOutput !== undefined) return fromLlmOutput;
+  const message = output.generations?.[0]?.[0] as
+    | { message?: { usage_metadata?: { output_tokens?: unknown } } }
+    | undefined;
+  return validTokens(message?.message?.usage_metadata?.output_tokens);
+}
+
 export function sumPromptTokens(
+  ...values: Array<number | undefined>
+): number | undefined {
+  const reported = values.filter((value): value is number => value !== undefined);
+  return reported.length === 0
+    ? undefined
+    : reported.reduce((total, value) => total + value, 0);
+}
+
+export function sumCompletionTokens(
   ...values: Array<number | undefined>
 ): number | undefined {
   const reported = values.filter((value): value is number => value !== undefined);
