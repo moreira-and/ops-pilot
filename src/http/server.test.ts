@@ -24,6 +24,8 @@ import type {
   ConversationStore,
 } from "../services/conversation-store.js";
 import { SqliteRequestTraceStore } from "../store/sqlite-request-trace-store.js";
+import { createPendingActionService } from "../services/pending-action-service.js";
+import { SqlitePendingActionStore } from "../store/sqlite-pending-action-store.js";
 
 function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
   return {
@@ -149,6 +151,172 @@ async function closeServer(server: Server): Promise<void> {
     server.close((error) => error ? reject(error) : resolve());
   });
 }
+
+test("CORS allows only the configured origin and preflights JSON requests", async (t) => {
+  const allowedOrigin = "https://war-room.example";
+  const { server, url } = await startServer(createApp({
+    strategies: {},
+    corsOrigin: allowedOrigin,
+  }));
+  t.after(() => closeServer(server));
+
+  const allowed = await fetch(`${url}/status`, {
+    headers: { origin: allowedOrigin },
+  });
+  assert.equal(allowed.headers.get("access-control-allow-origin"), allowedOrigin);
+
+  const rejected = await fetch(`${url}/status`, {
+    headers: { origin: "https://untrusted.example" },
+  });
+  assert.equal(rejected.headers.get("access-control-allow-origin"), null);
+
+  const preflight = await fetch(`${url}/chat`, {
+    method: "OPTIONS",
+    headers: {
+      origin: allowedOrigin,
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type",
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(
+    preflight.headers.get("access-control-allow-origin"),
+    allowedOrigin,
+  );
+  assert.ok(
+    preflight.headers.get("access-control-allow-methods")
+      ?.split(",")
+      .map((method) => method.trim())
+      .includes("POST"),
+  );
+  assert.match(
+    preflight.headers.get("access-control-allow-headers") ?? "",
+    /content-type/i,
+  );
+  assert.equal(preflight.headers.get("access-control-allow-credentials"), null);
+});
+
+test("chat approvals persist, restore, execute once, and reject conflicting decisions", async (t) => {
+  const userId = randomUUID();
+  const pendingActionStore = new SqlitePendingActionStore(":memory:");
+  let incidentCalls = 0;
+  const pendingActions = createPendingActionService(
+    pendingActionStore,
+    {
+      async openIncident() {
+        incidentCalls += 1;
+        const now = new Date("2026-11-13T00:01:00.000Z");
+        return {
+          id: "incident-1",
+          title: "Checkout unavailable",
+          serviceId: "checkout",
+          serviceName: "Checkout",
+          severity: "high",
+          status: "open",
+          summary: null,
+          createdAt: now,
+          updatedAt: now,
+          resolvedAt: null,
+        };
+      },
+      async resolveIncident(id) {
+        throw new Error(`Unexpected resolve of ${id}`);
+      },
+    },
+  );
+  const strategy: ReasoningStrategy = {
+    name: "react",
+    async run(_input, options) {
+      await pendingActions.propose({
+        requestId: options?.requestId,
+        userId: options?.userId,
+        kind: "open_incident",
+        input: {
+          title: "Checkout unavailable",
+          serviceId: "checkout",
+          severity: "high",
+        },
+      });
+      return {
+        answer: "An incident action is waiting for your decision.",
+        trace: [],
+        metrics: { llmCalls: 1, latencyMs: 1 },
+      };
+    },
+  };
+  const { server, url } = await startServer(createApp({
+    strategies: { react: strategy },
+    pendingActionService: pendingActions,
+  }));
+  t.after(() => closeServer(server));
+  t.after(() => pendingActionStore.close());
+
+  const chat = await fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Open an incident", userId }),
+  });
+  assert.equal(chat.status, 202);
+  const chatBody = await chat.json() as {
+    pendingActions: Array<{ id: string; status: string }>;
+  };
+  assert.equal(chatBody.pendingActions.length, 1);
+  assert.equal(chatBody.pendingActions[0]?.status, "pending");
+  const actionId = chatBody.pendingActions[0]!.id;
+
+  const invalidList = await fetch(`${url}/actions?userId=not-a-uuid`);
+  assert.equal(invalidList.status, 400);
+  const restored = await fetch(`${url}/actions?userId=${userId}`);
+  assert.equal(restored.status, 200);
+  assert.deepEqual((await restored.json() as { actions: unknown[] }).actions.length, 1);
+
+  const wrongOwner = await fetch(`${url}/actions/${actionId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      userId: randomUUID(),
+      decision: "approve",
+    }),
+  });
+  assert.equal(wrongOwner.status, 404);
+
+  const approved = await fetch(`${url}/actions/${actionId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, decision: "approve" }),
+  });
+  assert.equal(approved.status, 200);
+  assert.equal((await approved.json() as { status: string }).status, "approved");
+  assert.equal(incidentCalls, 1);
+
+  const repeated = await fetch(`${url}/actions/${actionId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, decision: "approve" }),
+  });
+  assert.equal(repeated.status, 200);
+  assert.equal(incidentCalls, 1);
+
+  const conflict = await fetch(`${url}/actions/${actionId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, decision: "deny" }),
+  });
+  assert.equal(conflict.status, 409);
+
+  const invalidId = await fetch(`${url}/actions/not-a-uuid/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, decision: "approve" }),
+  });
+  assert.equal(invalidId.status, 400);
+
+  const activeAfterDecision = await fetch(`${url}/actions?userId=${userId}`);
+  assert.deepEqual(
+    (await activeAfterDecision.json() as { actions: unknown[] }).actions,
+    [],
+  );
+});
 
 const contextTokenizer = getEncoding("cl100k_base");
 
@@ -1116,4 +1284,158 @@ test("GET /status returns grouped aggregates with null keys and matching totals"
   assert.equal(body.byRoute.reduce((total, group) => total + group.total, 0), 2);
   assert.equal(body.byModel.reduce((total, group) => total + group.total, 0), 2);
   assert.equal(body.byRoute[0]?.errors, 1);
+});
+
+test("POST /chat returns pending proposals as 202 and action routes restore and decide them", async (t) => {
+  const userId = randomUUID();
+  const store = new SqlitePendingActionStore(":memory:");
+  let shouldFail = false;
+  let mutations = 0;
+  const pendingActionService = createPendingActionService(store, {
+    async openIncident(input) {
+      mutations += 1;
+      if (shouldFail) throw new Error("sensitive mutation detail");
+      const now = new Date();
+      return {
+        id: "incident-1",
+        title: input.title,
+        serviceId: input.serviceId,
+        serviceName: "Checkout",
+        severity: input.severity,
+        status: "open",
+        summary: null,
+        createdAt: now,
+        updatedAt: now,
+        resolvedAt: null,
+      };
+    },
+    async resolveIncident() {
+      throw new Error("Unexpected resolve operation.");
+    },
+  });
+  const strategy: ReasoningStrategy = {
+    name: "react",
+    async run(input, options) {
+      await pendingActionService.propose({
+        userId: options?.userId,
+        requestId: options?.requestId,
+        kind: "open_incident",
+        input: {
+          title: input,
+          serviceId: "checkout",
+          severity: "high",
+        },
+      });
+      return {
+        answer: "Proposed an incident.",
+        trace: [{
+          sequence: 0,
+          type: "answer",
+          node: "response",
+          content: "Proposed.",
+        }],
+        metrics: { llmCalls: 1, latencyMs: 1 },
+      };
+    },
+  };
+  const { server, url } = await startServer(createApp({
+    pendingActionService,
+    strategies: { react: strategy },
+  }));
+  t.after(async () => {
+    await closeServer(server);
+    store.close();
+  });
+
+  const chat = async (message: string) => fetch(`${url}/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message, userId }),
+  });
+  const firstChat = await chat("Checkout unavailable");
+  assert.equal(firstChat.status, 202);
+  const accepted = await firstChat.json() as {
+    requestId: string;
+    pendingActions: Array<{ id: string; status: string; kind: string }>;
+  };
+  assert.equal(accepted.pendingActions.length, 1);
+  assert.equal(accepted.pendingActions[0]?.status, "pending");
+  assert.equal(accepted.pendingActions[0]?.kind, "open_incident");
+  assert.equal(JSON.stringify(accepted).includes("payload"), false);
+  assert.equal(mutations, 0);
+
+  const restored = await fetch(`${url}/actions?userId=${userId}`);
+  assert.equal(restored.status, 200);
+  assert.deepEqual(
+    (await restored.json() as { actions: Array<{ id: string }> }).actions.map(
+      ({ id }) => id,
+    ),
+    [accepted.pendingActions[0]?.id],
+  );
+
+  const actionId = accepted.pendingActions[0]!.id;
+  const wrongOwner = await fetch(`${url}/actions/${actionId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId: randomUUID(), decision: "approve" }),
+  });
+  assert.equal(wrongOwner.status, 404);
+
+  const approved = await fetch(`${url}/actions/${actionId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, decision: "approve" }),
+  });
+  assert.equal(approved.status, 200);
+  assert.equal((await approved.json() as { status: string }).status, "approved");
+  assert.equal(mutations, 1);
+
+  const repeated = await fetch(`${url}/actions/${actionId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, decision: "approve" }),
+  });
+  assert.equal(repeated.status, 200);
+  assert.equal((await repeated.json() as { status: string }).status, "approved");
+  assert.equal(mutations, 1);
+
+  const conflict = await fetch(`${url}/actions/${actionId}/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, decision: "deny" }),
+  });
+  assert.equal(conflict.status, 409);
+
+  shouldFail = true;
+  const secondChat = await chat("Payment processing failed");
+  const secondAccepted = await secondChat.json() as {
+    pendingActions: Array<{ id: string }>;
+  };
+  const failedApproval = await fetch(
+    `${url}/actions/${secondAccepted.pendingActions[0]?.id}/decision`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId, decision: "approve" }),
+    },
+  );
+  assert.equal(failedApproval.status, 500);
+  assert.equal(JSON.stringify(await failedApproval.json()).includes("sensitive"), false);
+  assert.equal(mutations, 2);
+});
+
+test("action routes reject invalid IDs and inputs and report when approval is unavailable", async (t) => {
+  const { server, url } = await startServer(createApp({ strategies: {} }));
+  t.after(() => closeServer(server));
+
+  const invalidList = await fetch(`${url}/actions?userId=operator`);
+  assert.equal(invalidList.status, 400);
+  const unavailable = await fetch(`${url}/actions?userId=${randomUUID()}`);
+  assert.equal(unavailable.status, 503);
+  const invalidId = await fetch(`${url}/actions/not-a-uuid/decision`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId: randomUUID(), decision: "approve" }),
+  });
+  assert.equal(invalidId.status, 400);
 });

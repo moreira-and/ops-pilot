@@ -3,6 +3,7 @@ import type { ToolRuntime } from "@langchain/core/tools";
 import { AlertService } from "../services/alert-service.js";
 import { IncidentService } from "../services/incident-service.js";
 import type { OperationalStore } from "../services/operational-store.js";
+import type { PendingActionService } from "../services/pending-action-service.js";
 import {
   createPreferenceForgetService,
   type PreferenceMemoryStore,
@@ -79,6 +80,10 @@ const severity = z.union([
   z.enum(["critical", "high", "medium", "low"]),
   z.enum(["sev1", "sev2", "sev3", "sev4"]),
 ]).describe("Severidade; aliases sev1, sev2, sev3 e sev4 correspondem a critical, high, medium e low.");
+const incidentActionContextSchema = z.object({
+  userId: z.string().uuid(),
+  requestId: z.string().uuid(),
+}).strict();
 
 export const listAlertsInputSchema = z.object({
   status: alertStatus,
@@ -182,6 +187,7 @@ function normalizeSeverity(
 export function createOperationalTools(
   store: OperationalStore,
   fetchImpl: typeof fetch = fetch,
+  pendingActions?: Pick<PendingActionService, "propose">,
 ) {
   const alerts = new AlertService(store);
   const incidents = new IncidentService(store);
@@ -211,16 +217,28 @@ export function createOperationalTools(
   );
 
   const openIncident = tool(
-    async ({ title, service, severity: incidentSeverity }) =>
-      JSON.stringify(
-        incidentRecordSchema.parse(
-          await incidents.openIncident({
-            title,
-            serviceId: service,
-            severity: normalizeSeverity(incidentSeverity),
-          }),
-        ),
-      ),
+    async (
+      { title, service, severity: incidentSeverity },
+      runtime: ToolRuntime<unknown, z.infer<typeof incidentActionContextSchema>>,
+    ) => {
+      const input = {
+        title,
+        serviceId: service,
+        severity: normalizeSeverity(incidentSeverity),
+      };
+      if (pendingActions) {
+        const context = incidentActionContextSchema.parse(runtime.context);
+        const action = await pendingActions.propose({
+          ...context,
+          kind: "open_incident",
+          input,
+        });
+        return JSON.stringify({ status: "pending", action });
+      }
+      return JSON.stringify(
+        incidentRecordSchema.parse(await incidents.openIncident(input)),
+      );
+    },
     {
       name: "open_incident",
       description:
@@ -230,10 +248,23 @@ export function createOperationalTools(
   );
 
   const resolveIncident = tool(
-    async ({ id }) =>
-      JSON.stringify(
+    async (
+      { id },
+      runtime: ToolRuntime<unknown, z.infer<typeof incidentActionContextSchema>>,
+    ) => {
+      if (pendingActions) {
+        const context = incidentActionContextSchema.parse(runtime.context);
+        const action = await pendingActions.propose({
+          ...context,
+          kind: "resolve_incident",
+          input: { id },
+        });
+        return JSON.stringify({ status: "pending", action });
+      }
+      return JSON.stringify(
         incidentRecordSchema.parse(await incidents.resolveIncident({ id })),
-      ),
+      );
+    },
     {
       name: "resolve_incident",
       description:
@@ -280,11 +311,19 @@ export function createOperationalTools(
   };
 }
 
+let defaultStore: SqliteOpsStore | undefined;
 let defaultTools: ReturnType<typeof createOperationalTools> | undefined;
 
-export function getDefaultOperationalTools(): ReturnType<typeof createOperationalTools> {
-  defaultTools ??= createOperationalTools(
-    new SqliteOpsStore(undefined, { data: DEMO_DATA, runbooks: DEMO_RUNBOOKS }),
+export function getDefaultOperationalTools(
+  pendingActions?: Pick<PendingActionService, "propose">,
+): ReturnType<typeof createOperationalTools> {
+  defaultStore ??= new SqliteOpsStore(
+    undefined,
+    { data: DEMO_DATA, runbooks: DEMO_RUNBOOKS },
   );
+  if (pendingActions) {
+    return createOperationalTools(defaultStore, fetch, pendingActions);
+  }
+  defaultTools ??= createOperationalTools(defaultStore);
   return defaultTools;
 }

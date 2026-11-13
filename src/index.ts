@@ -10,11 +10,25 @@ import {
 import { SqliteConversationStore } from "./store/sqlite-conversation-store.js";
 import { SqliteMemoryStore } from "./store/sqlite-memory-store.js";
 import { SqliteRequestTraceStore } from "./store/sqlite-request-trace-store.js";
+import { SqlitePendingActionStore } from "./store/sqlite-pending-action-store.js";
+import { SqliteOpsStore } from "./store/sqlite-ops-store.js";
+import { createPendingActionService } from "./services/pending-action-service.js";
+import { DEMO_DATA } from "./scripts/demo-data.js";
+import { DEMO_RUNBOOKS } from "./scripts/demo-runbooks.js";
 
 if (process.argv[1]?.endsWith("/index.ts")) {
   const port = Number(process.env.PORT ?? 3000);
   const conversationStore = new SqliteConversationStore();
   const requestTraceStore = new SqliteRequestTraceStore();
+  const pendingActionStore = new SqlitePendingActionStore();
+  const operationalStore = new SqliteOpsStore(undefined, {
+    data: DEMO_DATA,
+    runbooks: DEMO_RUNBOOKS,
+  });
+  const pendingActionService = createPendingActionService(
+    pendingActionStore,
+    operationalStore,
+  );
   const memoryStore = new MemoryStore(new SqliteMemoryStore(), embed);
   const learningService = createLearningService({
     extractor: createLearningExtractor(),
@@ -26,6 +40,11 @@ if (process.argv[1]?.endsWith("/index.ts")) {
     memoryStore,
     learningService,
     summarizer: createLlmSummarizer(),
-    strategies: createStrategyRegistry(memoryStore),
+    strategies: createStrategyRegistry(
+      memoryStore,
+      pendingActionService,
+      operationalStore,
+    ),
+    pendingActionService,
   }).listen(port);
 }

@@ -177,14 +177,24 @@ function executeTool(
   opsTools: ReturnType<typeof getDefaultOperationalTools>,
   memoryStore?: PreferenceMemoryStore,
   userId?: string,
+  requestId?: string,
 ): Promise<unknown> {
+  const toolContext = userId && requestId
+    ? { context: { userId, requestId } }
+    : undefined;
   switch (tool) {
     case "list_alerts":
       return opsTools.listAlerts.invoke(listAlertsInputSchema.parse(args));
     case "open_incident":
-      return opsTools.openIncident.invoke(openIncidentInputSchema.parse(args));
+      return opsTools.openIncident.invoke(
+        openIncidentInputSchema.parse(args),
+        toolContext,
+      );
     case "resolve_incident":
-      return opsTools.resolveIncident.invoke(resolveIncidentInputSchema.parse(args));
+      return opsTools.resolveIncident.invoke(
+        resolveIncidentInputSchema.parse(args),
+        toolContext,
+      );
     case "list_incidents":
       return opsTools.listIncidents.invoke(listIncidentsInputSchema.parse(args));
     case "consultar_runbook":
@@ -208,7 +218,8 @@ export function createPlanAndExecuteStrategy(
     name: "plan-and-execute",
     async run(input: string, options?: ReasoningOptions) {
       const request = reasoningInputSchema.parse(input);
-      const { maxIterations, userId } = reasoningOptionsSchema.parse(options ?? {});
+      const { maxIterations, userId, requestId } =
+        reasoningOptionsSchema.parse(options ?? {});
       const elapsed = startTimer();
       const trace: TraceEvent[] = [];
       let llmCalls = 0;
@@ -285,6 +296,7 @@ export function createPlanAndExecuteStrategy(
               dependencies.operationalTools ?? getDefaultOperationalTools(),
               dependencies.memoryStore,
               userId,
+              requestId,
             ));
 
         const State = Annotation.Root({

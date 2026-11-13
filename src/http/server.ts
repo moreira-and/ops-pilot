@@ -1,3 +1,4 @@
+import cors from "cors";
 import express, { type Express, type Request, type Response } from "express";
 import { z } from "zod";
 import { strategyRegistry } from "../agents/index.js";
@@ -14,10 +15,16 @@ import {
   type ContextBudget,
 } from "../context/context-builder.js";
 import {
-  reasoningMetricsSchema,
-  reasoningResultSchema,
   type ReasoningStrategy,
 } from "../agents/reasoning.js";
+import {
+  actionDecisionRequestSchema,
+  actionDecisionResponseSchema,
+  actionListResponseSchema,
+  chatAcceptedResponseSchema,
+  chatRequestSchema,
+  chatResponseSchema,
+} from "../contracts/war-room.js";
 import {
   ChatStrategyFailedError,
   composeStrategyInput,
@@ -25,9 +32,13 @@ import {
   type ChatLearningService,
   type MemoryRecallStore,
 } from "../services/chat-service.js";
+import type { PendingActionService } from "../services/pending-action-service.js";
 import type { ConversationStore } from "../services/conversation-store.js";
 import {
   ConversationNotFoundError,
+  PendingActionConflictError,
+  PendingActionExecutionError,
+  PendingActionNotFoundError,
   RequestNotFoundError,
 } from "../services/domain-error.js";
 import {
@@ -49,37 +60,29 @@ import type { StructuredLogger } from "../obs/logger.js";
 import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
 import { SqliteRequestTraceStore } from "../store/sqlite-request-trace-store.js";
 
-const chatRequestSchema = z.object({
-  message: z.string().trim().min(1),
-  userId: z.string().trim().min(1),
-  strategy: z.string().trim().min(1).optional(),
-  reflact: z.boolean().default(false),
-  conversationId: z.string().trim().min(1).optional(),
-});
-
-const chatResponseSchema = reasoningResultSchema.extend({
-  requestId: z.string().uuid(),
-  conversationId: z.string().trim().min(1),
-  metrics: reasoningMetricsSchema.extend({
-    historyMessages: z.number().int().min(0).max(8),
-    contextBreakdown: z.object({
-      system: z.number().int().nonnegative(),
-      summary: z.number().int().nonnegative(),
-      history: z.number().int().nonnegative(),
-      memories: z.number().int().nonnegative(),
-      message: z.number().int().nonnegative(),
-    }),
-  }),
-});
-
 const DEFAULT_TIMEOUT_MS = 180_000;
+
+const corsOriginSchema = z.string().trim().url().refine((value) => {
+  const parsed = new URL(value);
+  return (
+    (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+    parsed.username === "" &&
+    parsed.password === "" &&
+    parsed.pathname === "/" &&
+    parsed.search === "" &&
+    parsed.hash === "" &&
+    !value.includes("?") &&
+    !value.includes("#")
+  );
+}, "CORS_ORIGIN must be an exact HTTP(S) origin without credentials or a path.");
 
 export interface ChatServerOptions {
   strategies?: Record<string, ReasoningStrategy>;
   route?: ProductionGraphDependencies["route"];
   reflectionDecorator?: (strategy: ReasoningStrategy) => ReasoningStrategy;
   contextBudget?: ContextBudget;
-  env?: Pick<NodeJS.ProcessEnv, "CONTEXT_BUDGET">;
+  env?: Partial<Pick<NodeJS.ProcessEnv, "CONTEXT_BUDGET" | "CORS_ORIGIN">>;
+  corsOrigin?: string;
   conversationStore?: ConversationStore;
   requestTraceStore?: RequestTraceStore;
   requestTraceService?: ReturnType<typeof createRequestTraceService>;
@@ -87,6 +90,7 @@ export interface ChatServerOptions {
   logger?: StructuredLogger;
   memoryStore?: MemoryRecallStore;
   learningService?: ChatLearningService;
+  pendingActionService?: PendingActionService;
   summarizer?: Summarizer;
   timeoutMs?: number;
 }
@@ -133,6 +137,18 @@ function sendFailure(
     send(404, { error: "Request not found" });
     return;
   }
+  if (error instanceof PendingActionNotFoundError) {
+    send(404, { error: "Pending action not found" });
+    return;
+  }
+  if (error instanceof PendingActionConflictError) {
+    send(409, { error: "Pending action cannot accept this decision" });
+    return;
+  }
+  if (error instanceof PendingActionExecutionError) {
+    send(500, { error: "Approved action failed" });
+    return;
+  }
   if (error instanceof ChatStrategyFailedError) {
     send(500, { error: "Internal server error" });
     return;
@@ -149,6 +165,11 @@ function sendFailure(
 }
 
 export function createApp(options: ChatServerOptions = {}): Express {
+  const rawCorsOrigin = options.corsOrigin ??
+    (options.env === undefined ? process.env.CORS_ORIGIN : options.env.CORS_ORIGIN);
+  const corsOrigin = rawCorsOrigin === undefined || rawCorsOrigin.trim() === ""
+    ? undefined
+    : new URL(corsOriginSchema.parse(rawCorsOrigin)).origin;
   const rawContextBudget = options.env === undefined
     ? process.env.CONTEXT_BUDGET
     : options.env.CONTEXT_BUDGET;
@@ -182,8 +203,20 @@ export function createApp(options: ChatServerOptions = {}): Express {
     options.summarizer,
     contextBudget,
   );
+  const pendingActionService = options.pendingActionService;
   const app = express();
 
+  app.use(cors({
+    origin: (origin, callback) =>
+      callback(
+        null,
+        corsOrigin !== undefined && origin === corsOrigin ? origin : false,
+      ),
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type"],
+    credentials: false,
+    optionsSuccessStatus: 204,
+  }));
   app.use(express.json());
   app.post("/chat", async (request: Request, response: Response) => {
     const parsed = chatRequestSchema.safeParse(request.body);
@@ -192,6 +225,13 @@ export function createApp(options: ChatServerOptions = {}): Express {
         error: "Invalid request body",
         issues: parsed.error.issues,
       });
+      return;
+    }
+    if (
+      pendingActionService &&
+      !z.string().uuid().safeParse(parsed.data.userId).success
+    ) {
+      response.status(400).json({ error: "Invalid userId" });
       return;
     }
 
@@ -223,7 +263,12 @@ export function createApp(options: ChatServerOptions = {}): Express {
             runWithTimeout(
               productionGraph.run(
                 composeStrategyInput(input, contextBudget),
-                strategyOptions,
+                {
+                  ...strategyOptions,
+                  ...(requestContext
+                    ? { requestId: requestContext.requestId }
+                    : {}),
+                },
                 parsed.data.strategy,
                 parsed.data.reflact,
                 requestContext,
@@ -232,10 +277,22 @@ export function createApp(options: ChatServerOptions = {}): Express {
             ),
         },
       );
-      response.status(200).json(chatResponseSchema.parse({
+      const responseBody = {
         ...result,
         requestId: requestContext.requestId,
-      }));
+      };
+      const pendingActions = pendingActionService?.listForRequest(
+        requestContext.requestId,
+        parsed.data.userId,
+      ) ?? [];
+      if (pendingActions.length > 0) {
+        response.status(202).json(chatAcceptedResponseSchema.parse({
+          ...responseBody,
+          pendingActions,
+        }));
+        return;
+      }
+      response.status(200).json(chatResponseSchema.parse(responseBody));
     } catch (error) {
       if (requestContext) {
         try {
@@ -246,6 +303,46 @@ export function createApp(options: ChatServerOptions = {}): Express {
         }
       }
       sendFailure(error, response, requestContext?.requestId);
+    }
+  });
+
+  app.get("/actions", (request: Request, response: Response) => {
+    const query = z.object({ userId: z.string().uuid() }).safeParse({
+      userId: request.query.userId,
+    });
+    if (!query.success) {
+      response.status(400).json({ error: "Invalid userId" });
+      return;
+    }
+    if (!pendingActionService) {
+      response.status(503).json({ error: "Approval actions unavailable" });
+      return;
+    }
+    try {
+      response.status(200).json(actionListResponseSchema.parse({
+        actions: pendingActionService.listForUser(query.data.userId),
+      }));
+    } catch (error) {
+      sendFailure(error, response);
+    }
+  });
+
+  app.post("/actions/:id/decision", async (request: Request, response: Response) => {
+    const id = z.string().uuid().safeParse(request.params.id);
+    const decision = actionDecisionRequestSchema.safeParse(request.body);
+    if (!id.success || !decision.success) {
+      response.status(400).json({ error: "Invalid decision request" });
+      return;
+    }
+    if (!pendingActionService) {
+      response.status(503).json({ error: "Approval actions unavailable" });
+      return;
+    }
+    try {
+      const result = await pendingActionService.decide(id.data, decision.data);
+      response.status(200).json(actionDecisionResponseSchema.parse(result));
+    } catch (error) {
+      sendFailure(error, response);
     }
   });
 

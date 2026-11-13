@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { z } from "zod";
+import { pendingActionSchema } from "../contracts/war-room.js";
 import {
   checkProviderStatusInputSchema,
   consultarRunbookInputSchema,
@@ -13,6 +16,7 @@ import {
 import { runbookLookupResultSchema } from "../services/runbook-service.js";
 import type { DemoData, RunbookRecord } from "../services/operational-store.js";
 import { SqliteOpsStore } from "../store/sqlite-ops-store.js";
+import { newIncidentSchema } from "../services/operational-store.js";
 
 const data: DemoData = {
   services: [{ id: "api", name: "API" }, { id: "billing", name: "Billing" }],
@@ -81,6 +85,80 @@ test("open_incident and resolve_incident validate and return persisted results",
     ) as { status: string };
     assert.equal(resolved.status, "resolved");
   });
+});
+
+test("incident tools create approval proposals instead of mutating the store", async () => {
+  const store = new SqliteOpsStore(":memory:");
+  await store.upsertDemoData(data, runbooks);
+  const userId = randomUUID();
+  const requestId = randomUUID();
+  const proposalSchema = z.discriminatedUnion("kind", [
+    z.object({
+      userId: z.string().uuid(),
+      requestId: z.string().uuid(),
+      kind: z.literal("open_incident"),
+      input: newIncidentSchema,
+    }),
+    z.object({
+      userId: z.string().uuid(),
+      requestId: z.string().uuid(),
+      kind: z.literal("resolve_incident"),
+      input: z.object({ id: z.string().trim().min(1) }),
+    }),
+  ]);
+  const proposals: z.infer<typeof proposalSchema>[] = [];
+  const pendingActions = {
+    async propose(input: unknown) {
+      const proposal = proposalSchema.parse(input);
+      proposals.push(proposal);
+      return pendingActionSchema.parse({
+        id: randomUUID(),
+        requestId: proposal.requestId,
+        kind: proposal.kind,
+        summary: "Review this incident action",
+        details: proposal.kind === "open_incident"
+          ? {
+            title: proposal.input.title,
+            service: proposal.input.serviceId,
+            severity: proposal.input.severity,
+          }
+          : { id: proposal.input.id },
+        status: "pending",
+      });
+    },
+  };
+
+  try {
+    const tools = createOperationalTools(store, fetch, pendingActions);
+    const openResult = JSON.parse(String(await tools.openIncident.invoke(
+      { title: "Checkout unavailable", service: "api", severity: "high" },
+      { context: { userId, requestId } },
+    ))) as { status: string };
+    const existing = await store.openIncident({
+      title: "Existing incident",
+      serviceId: "api",
+      severity: "low",
+    });
+    const resolveResult = JSON.parse(String(await tools.resolveIncident.invoke(
+      { id: existing.id },
+      { context: { userId, requestId } },
+    ))) as { status: string };
+
+    assert.equal(openResult.status, "pending");
+    assert.equal(resolveResult.status, "pending");
+    assert.deepEqual(proposals.map(({ kind }) => kind), [
+      "open_incident",
+      "resolve_incident",
+    ]);
+    assert.equal((await store.listIncidents("open")).length, 1);
+    assert.equal(
+      (await store.listIncidents("open")).find(({ id }) => id === existing.id)
+        ?.status,
+      "open",
+    );
+  } finally {
+    store.close();
+  }
 });
 
 test("open_incident normalizes all SEV aliases to canonical severities", async () => {

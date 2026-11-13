@@ -39,12 +39,15 @@ type TraceEventInput = TraceEvent extends infer Event
 interface ReactAgentInvoker {
   invoke(
     input: { messages: BaseMessageLike[] },
-    config?: RunnableConfig & { context?: { userId: string } },
+    config?: RunnableConfig & {
+      context?: { userId: string; requestId?: string };
+    },
   ): Promise<unknown>;
 }
 
 const reactContextSchema = z.object({
   userId: z.string().trim().min(1),
+  requestId: z.string().uuid().optional(),
 });
 
 export const MEMORY_CAPABILITY_PROMPT =
@@ -205,7 +208,8 @@ export function createReactStrategy(
     name: "react",
     async run(input: string, options?: ReasoningOptions) {
       const parsedInput = reasoningInputSchema.parse(input);
-      const { maxIterations, userId } = reasoningOptionsSchema.parse(options ?? {});
+      const { maxIterations, userId, requestId } =
+        reasoningOptionsSchema.parse(options ?? {});
       const elapsed = startTimer();
       const counter = new ModelCallCounter();
       try {
@@ -222,7 +226,14 @@ export function createReactStrategy(
         const state = await agent.invoke(
           { messages: [new HumanMessage(parsedInput)] },
           {
-            ...(userId ? { context: { userId } } : {}),
+            ...(userId
+              ? {
+                context: {
+                  userId,
+                  ...(requestId ? { requestId } : {}),
+                },
+              }
+              : {}),
             recursionLimit: maxIterations * 2 + 1,
             callbacks: [counter],
           },
