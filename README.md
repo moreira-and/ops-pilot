@@ -12,6 +12,39 @@ OpsPilot é um copiloto de plantão para investigar alertas de produção e exec
 - Inclui um cenário Mercadinho com cinco serviços, seis alertas e runbooks operacionais.
 - Disponibiliza uma arena de estratégias e um benchmark com cenários operacionais.
 
+## Publicação da War Room
+
+O GitHub Pages está configurado para publicar a interface em
+<https://moreira-and.github.io/ops-pilot/> usando GitHub Actions. O workflow **Deploy War Room
+to GitHub Pages** valida pull requests direcionadas a `main` e publica automaticamente após
+pushes nessa branch. Também é possível iniciá-lo pela aba **Actions**: uma execução manual
+em `main` publica, enquanto uma execução iniciada em outra branch valida o build sem publicar.
+Publicações são serializadas para evitar que uma execução concorrente substitua a versão
+mais recente.
+
+Após o workflow ser enviado à branch `main`, cada push dispara a compilação e publicação.
+O workflow usa a base `/ops-pilot/` e envia somente os arquivos estáticos de `web/dist`; a
+API, o banco de dados e suas credenciais não fazem parte do site. A aba **Actions** mostra as
+etapas e falhas da execução; após um deploy bem-sucedido, a URL do Pages fica disponível ali.
+Para conferir ou alterar a origem de publicação, acesse **Settings → Pages → Build and
+deployment → Source: GitHub Actions**.
+
+Valide localmente o mesmo caminho e os recursos da publicação:
+
+```sh
+npm run build:web -- --base=/ops-pilot/
+npm run preview:web -- --host 127.0.0.1 --base=/ops-pilot/
+```
+
+Abra <http://127.0.0.1:4173/ops-pilot/>. O build da publicação usa a URL padrão do
+projeto; o valor-base configurado para o fluxo local de desenvolvimento permanece
+inalterado.
+
+A API é hospedada separadamente. Para permitir que o navegador acesse a API de outra
+origem, configure `CORS_ORIGIN=https://moreira-and.github.io` na implantação da API.
+Configure a URL da API pela engrenagem da War Room; não inclua credenciais ou segredos na
+URL pública nem no frontend estático.
+
 ## Tecnologias
 
 - Node.js 22.13+ LTS e TypeScript ESM em modo estrito.
