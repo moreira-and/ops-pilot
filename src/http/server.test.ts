@@ -26,6 +26,9 @@ import type {
 import { SqliteRequestTraceStore } from "../store/sqlite-request-trace-store.js";
 import { createPendingActionService } from "../services/pending-action-service.js";
 import { SqlitePendingActionStore } from "../store/sqlite-pending-action-store.js";
+import { SqliteOpsStore } from "../store/sqlite-ops-store.js";
+import { createTeamStrategy } from "../team/team-mode.js";
+import { AIMessage, ToolMessage } from "@langchain/core/messages";
 
 function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
   return {
@@ -46,6 +49,57 @@ function fakeStrategy(name: string, calls: string[]): ReasoningStrategy {
     },
   };
 }
+
+test("team chat exposes a pending incident until the operator approves", async (t) => {
+  const operations = new SqliteOpsStore(":memory:");
+  const actionStore = new SqlitePendingActionStore(":memory:");
+  const traces = new SqliteRequestTraceStore(":memory:");
+  t.after(() => { operations.close(); actionStore.close(); traces.close(); });
+  await operations.upsertDemoData({ services: [{ id: "api", name: "API" }], alerts: [] }, []);
+  const pendingActionService = createPendingActionService(actionStore, operations);
+  const team = createTeamStrategy({
+    pendingActions: pendingActionService,
+    operationalStore: operations,
+    supervisor: async ({ board }) => board.length
+      ? { next: "done", brief: "Aguardando aprovação" }
+      : { next: "executor", brief: "Proponha um incidente" },
+    agentFactory: (_role, tools) => ({
+      async invoke(_input, config) {
+        const open = tools.find(({ name }) => name === "open_incident");
+        assert.ok(open);
+        const output = await open.invoke(
+          { title: "API", service: "api", severity: "high" },
+          { context: config.context },
+        );
+        return { messages: [
+          new ToolMessage({ content: String(output), name: "open_incident", tool_call_id: "call" }),
+          new AIMessage("Pendente"),
+        ] };
+      },
+    }),
+  });
+  const { server, url } = await startServer(createApp({
+    strategies: { team }, pendingActionService, requestTraceStore: traces,
+  }));
+  t.after(() => closeServer(server));
+  const userId = randomUUID();
+  const response = await fetch(`${url}/chat`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: "Abra incidente", userId, strategy: "team" }),
+  });
+  assert.equal(response.status, 202);
+  const body = await response.json() as { requestId: string; pendingActions: { id: string }[] };
+  assert.equal(body.pendingActions.length, 1);
+  assert.equal((await operations.listIncidents("all")).length, 0);
+  assert.equal(traces.get(body.requestId)?.request.route, "team");
+  assert.deepEqual(traces.get(body.requestId)?.trace.filter((event) => event.type === "handoff").map((event) => event.to), ["executor"]);
+  const decision = await fetch(`${url}/actions/${body.pendingActions[0]!.id}/decision`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId, decision: "approve" }),
+  });
+  assert.equal(decision.status, 200);
+  assert.equal((await operations.listIncidents("all")).length, 1);
+});
 
 function createApp(options: ChatServerOptions = {}) {
   return createExpressApp({

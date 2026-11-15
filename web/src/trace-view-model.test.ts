@@ -4,6 +4,18 @@ import { createTraceViewModel } from "./trace-view-model.js";
 
 const requestId = "c1d9a7f1-a944-4ace-b7d8-6ab7f7c947b1";
 
+test("accepts terminal handoffs only for the matching request", () => {
+  const trace = [{
+    sequence: 0, node: "supervisor", type: "handoff",
+    from: "supervisor", to: "done", brief: "Resumo final",
+  }];
+  assert.deepEqual(createTraceViewModel({ requestId, trace }, requestId), {
+    status: "available", requestId, events: trace,
+  });
+  assert.deepEqual(createTraceViewModel({ requestId, trace }, "b81ef9a6-9465-43ad-85a8-19b4d13c6a5e"), {
+    status: "unavailable", reason: "mismatch",
+  });
+});
 test("validates typed trace events and preserves the API event order", () => {
   const trace = [
     { sequence: 2, type: "answer", node: "response", content: "Done." },

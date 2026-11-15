@@ -4,7 +4,7 @@ const logMetadataSchema = z.object({
   requestId: z.string().uuid().optional(),
   node: z.enum(["solicitacao", "resposta"]),
   type: z.enum(["start", "done", "failed"]),
-  route: z.enum(["react", "plan-and-execute", "reflect:react"]).optional(),
+  route: z.enum(["react", "plan-and-execute", "reflect:react", "team"]).optional(),
   tokens: z.number().int().nonnegative().optional(),
   latencyMs: z.number().nonnegative().optional(),
   status: z.enum(["ok", "failed"]).optional(),

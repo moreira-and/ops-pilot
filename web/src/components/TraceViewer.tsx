@@ -1,3 +1,4 @@
+import React from "react";
 import type { TraceEvent } from "../../../src/agents/reasoning.js";
 import type { TraceViewModel } from "../trace-view-model.js";
 
@@ -50,6 +51,8 @@ function eventContent(event: TraceEvent) {
       );
     case "fallback":
       return <p>{event.from} → {event.to}: {event.reason}</p>;
+    case "handoff":
+      return <p>{event.from} → {event.to}: {event.brief}</p>;
   }
 }
 

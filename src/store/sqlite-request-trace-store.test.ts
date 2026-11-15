@@ -7,6 +7,46 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { SqliteRequestTraceStore } from "./sqlite-request-trace-store.js";
 
+test("upgrades old closed constraints without losing request and trace data", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "ops-pilot-team-migration-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "requests.db");
+  const oldId = randomUUID();
+  const date = "2026-11-12T00:00:00.000Z";
+  const db = new DatabaseSync(path);
+  db.exec(`
+    CREATE TABLE requests (
+      id TEXT PRIMARY KEY NOT NULL, user_id TEXT NOT NULL,
+      route TEXT CHECK (route IS NULL OR route IN ('react','plan-and-execute','reflect:react')),
+      model_used TEXT, prompt_tokens INTEGER, completion_tokens INTEGER, latency_ms REAL,
+      status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, error_code TEXT
+    );
+    CREATE TABLE trace_eventos (
+      request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+      seq INTEGER NOT NULL, node TEXT NOT NULL,
+      type TEXT NOT NULL CHECK (type IN ('thought','route','action','observation','plan','critique','summarize','fallback','answer')),
+      payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY (request_id, seq)
+    );
+  `);
+  db.prepare("INSERT INTO requests VALUES (?, ?, ?, NULL, NULL, NULL, 1, 'ok', ?, ?, NULL)")
+    .run(oldId, "operator", "react", date, date);
+  db.prepare("INSERT INTO trace_eventos VALUES (?, 0, 'response', 'answer', ?, ?)")
+    .run(oldId, JSON.stringify({ sequence: 0, node: "response", type: "answer", content: "old" }), date);
+  db.close();
+  const store = new SqliteRequestTraceStore(path);
+  assert.equal(store.get(oldId)?.trace.length, 1);
+  const id = randomUUID();
+  store.start({ id, userId: "operator", startedAt: new Date(date) });
+  store.complete(id, {
+    route: "team", modelUsed: null, promptTokens: null, completionTokens: null,
+    latencyMs: 1, completedAt: new Date(date),
+  }, [{ sequence: 0, node: "supervisor", type: "handoff", from: "supervisor", to: "done", brief: "Concluído" }]);
+  assert.equal(store.get(id)?.trace[0]?.type, "handoff");
+  assert.equal(store.get(oldId)?.trace.length, 1);
+  store.close();
+});
+
 test("persists a completed request and its metrics in an in-memory database", () => {
   const store = new SqliteRequestTraceStore(":memory:");
   const id = randomUUID();

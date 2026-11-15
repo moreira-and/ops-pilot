@@ -153,7 +153,7 @@ export class SqliteRequestTraceStore implements RequestTraceStore {
         id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(id)) > 0),
         user_id TEXT NOT NULL CHECK (length(trim(user_id)) > 0),
         route TEXT CHECK (
-          route IS NULL OR route IN ('react', 'plan-and-execute', 'reflect:react')
+          route IS NULL OR route IN ('react', 'plan-and-execute', 'reflect:react', 'team')
         ),
         model_used TEXT CHECK (model_used IS NULL OR length(trim(model_used)) > 0),
         prompt_tokens INTEGER CHECK (prompt_tokens IS NULL OR prompt_tokens >= 0),
@@ -174,7 +174,7 @@ export class SqliteRequestTraceStore implements RequestTraceStore {
         type TEXT NOT NULL CHECK (
           type IN (
             'thought', 'route', 'action', 'observation', 'plan',
-            'critique', 'summarize', 'fallback', 'answer'
+            'critique', 'summarize', 'fallback', 'answer', 'handoff'
           )
         ),
         payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
@@ -192,6 +192,57 @@ export class SqliteRequestTraceStore implements RequestTraceStore {
           completion_tokens IS NULL OR completion_tokens >= 0
         )
       `);
+    }
+    const schemaRows = this.db.prepare(
+      "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('requests', 'trace_eventos')",
+    ).all() as SqlRow[];
+    const requestSql = textField(schemaRows.find((row) => row.name === "requests")!, "sql");
+    const traceSql = textField(schemaRows.find((row) => row.name === "trace_eventos")!, "sql");
+    if (!requestSql.includes("'team'") || !traceSql.includes("'handoff'")) {
+      this.db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
+      try {
+        this.db.exec(`
+          CREATE TABLE requests_team_upgrade (
+            id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(id)) > 0),
+            user_id TEXT NOT NULL CHECK (length(trim(user_id)) > 0),
+            route TEXT CHECK (route IS NULL OR route IN ('react', 'plan-and-execute', 'reflect:react', 'team')),
+            model_used TEXT CHECK (model_used IS NULL OR length(trim(model_used)) > 0),
+            prompt_tokens INTEGER CHECK (prompt_tokens IS NULL OR prompt_tokens >= 0),
+            completion_tokens INTEGER CHECK (completion_tokens IS NULL OR completion_tokens >= 0),
+            latency_ms REAL CHECK (latency_ms IS NULL OR latency_ms >= 0),
+            status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'failed')),
+            started_at TEXT NOT NULL, completed_at TEXT, error_code TEXT
+          );
+          INSERT INTO requests_team_upgrade
+            SELECT id, user_id, route, model_used, prompt_tokens, completion_tokens,
+              latency_ms, status, started_at, completed_at, error_code FROM requests;
+          CREATE TABLE trace_eventos_team_upgrade (
+            request_id TEXT NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL CHECK (seq >= 0),
+            node TEXT NOT NULL CHECK (length(trim(node)) > 0),
+            type TEXT NOT NULL CHECK (type IN (
+              'thought', 'route', 'action', 'observation', 'plan',
+              'critique', 'summarize', 'fallback', 'answer', 'handoff'
+            )),
+            payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (request_id, seq)
+          );
+          INSERT INTO trace_eventos_team_upgrade SELECT * FROM trace_eventos;
+          DROP TABLE trace_eventos;
+          DROP TABLE requests;
+          ALTER TABLE requests_team_upgrade RENAME TO requests;
+          ALTER TABLE trace_eventos_team_upgrade RENAME TO trace_eventos;
+        `);
+        const violations = this.db.prepare("PRAGMA foreign_key_check").all();
+        if (violations.length) throw new Error("Request trace migration found invalid foreign keys.");
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      } finally {
+        this.db.exec("PRAGMA foreign_keys = ON");
+      }
     }
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_requests_started_at

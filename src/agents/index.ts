@@ -5,6 +5,7 @@ import type { PreferenceMemoryStore } from "../services/preference-forget-servic
 import type { PendingActionService } from "../services/pending-action-service.js";
 import type { OperationalStore } from "../services/operational-store.js";
 import { createOperationalTools, getDefaultOperationalTools } from "./tools.js";
+import { createTeamStrategy } from "../team/team-mode.js";
 
 export function createStrategyRegistry(
   memoryStore?: PreferenceMemoryStore,
@@ -31,6 +32,12 @@ export function createStrategyRegistry(
       ...(memoryStore ? { memoryStore } : {}),
       ...(operationalTools ? { operationalTools } : {}),
     }),
+    ...(pendingActionService ? {
+      team: createTeamStrategy({
+        pendingActions: pendingActionService,
+        ...(operationalStore ? { operationalStore } : {}),
+      }),
+    } : {}),
   };
 }
 

@@ -3,6 +3,17 @@ import test from "node:test";
 import { traceEventSchema } from "./reasoning.js";
 import { formatTrace, redactToolArgs } from "./trace.js";
 
+test("validates supervisor handoffs including the terminal decision", () => {
+  for (const to of ["analista", "planejador", "executor", "done"]) {
+    const event = { sequence: 0, node: "supervisor", type: "handoff", from: "supervisor", to, brief: "Próximo passo" };
+    assert.deepEqual(traceEventSchema.parse(event), event);
+  }
+  assert.equal(traceEventSchema.safeParse({
+    sequence: 0, node: "supervisor", type: "handoff",
+    from: "supervisor", to: "other", brief: "x",
+  }).success, false);
+});
+
 test("formats every trace event type in sequence and preserves escaped content", () => {
   const formatted = formatTrace([
     { sequence: 0, type: "thought", node: "test", content: "Check service state" },

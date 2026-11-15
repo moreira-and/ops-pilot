@@ -21,7 +21,7 @@ export const traceEventSchema = z.union([
   traceBaseSchema.extend({ type: z.literal("thought"), content: z.string() }),
   traceBaseSchema.extend({
     type: z.literal("route"),
-    route: z.enum(["react", "plan-and-execute", "reflect:react"]),
+    route: z.enum(["react", "plan-and-execute", "reflect:react", "team"]),
     reason: z.string().trim().min(1),
     source: z.enum(["router", "override"]),
   }),
@@ -70,6 +70,13 @@ export const traceEventSchema = z.union([
     from: z.string().min(1),
     to: z.string().min(1),
     reason: z.string().min(1),
+  }),
+  traceBaseSchema.extend({
+    node: z.literal("supervisor"),
+    type: z.literal("handoff"),
+    from: z.literal("supervisor"),
+    to: z.enum(["analista", "planejador", "executor", "done"]),
+    brief: z.string().trim().min(1),
   }),
   traceBaseSchema.extend({ type: z.literal("answer"), content: z.string() }),
 ]);

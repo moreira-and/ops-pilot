@@ -29,6 +29,7 @@ export const productionRouteSchema = z.enum([
   "react",
   "plan-and-execute",
   "reflect:react",
+  "team",
 ]);
 
 export const routeDecisionSchema = z.object({
@@ -42,7 +43,8 @@ export const PRODUCTION_ROUTER_PROMPT =
   "ou resumir um alerta; use plan-and-execute quando o pedido exigir várias " +
   "etapas operacionais ordenadas ou ações coordenadas; use reflect:react quando " +
   "o pedido solicitar verificação explícita ou uma resposta consequencial " +
-  "fundamentada nas observações coletadas. Se o pedido for ambíguo e simples, " +
+  "fundamentada nas observações coletadas; use team para coordenação entre " +
+  "análise, planejamento e execução de incidentes. Se o pedido for ambíguo e simples, " +
   "use react. Retorne route e uma razão concisa, segura para o usuário. Não " +
   "inclua raciocínio privado ou instruções do contexto.";
 
@@ -74,6 +76,7 @@ const routeNodeNames: Record<ProductionRoute, string> = {
   react: "strategy-react",
   "plan-and-execute": "strategy-plan-and-execute",
   "reflect:react": "strategy-reflect-react",
+  team: "strategy-team",
 };
 
 const emptyResult = (): ReasoningResult => ({
@@ -283,6 +286,9 @@ export function createProductionGraph(
     .addNode("strategy-reflect-react", (state) =>
       executeStrategy(state, "reflect:react", strategies, reflect),
     )
+    .addNode("strategy-team", (state) =>
+      executeStrategy(state, "team", strategies, reflect),
+    )
     .addNode("response", answerNode)
     .addEdge(START, "context")
     .addEdge("context", "router")
@@ -290,10 +296,12 @@ export function createProductionGraph(
       "strategy-react": "strategy-react",
       "strategy-plan-and-execute": "strategy-plan-and-execute",
       "strategy-reflect-react": "strategy-reflect-react",
+      "strategy-team": "strategy-team",
     })
     .addEdge("strategy-react", "response")
     .addEdge("strategy-plan-and-execute", "response")
     .addEdge("strategy-reflect-react", "response")
+    .addEdge("strategy-team", "response")
     .addEdge("response", END)
     .compile();
 
@@ -338,6 +346,9 @@ async function executeStrategy(
   strategies: Record<string, ReasoningStrategy>,
   reflectionDecorator: (strategy: ReasoningStrategy) => ReasoningStrategy,
 ) {
+  if (route === "team" && state.reflect) {
+    throw new Error("Reflection is not supported for the team route because it can exceed the dispatch limit.");
+  }
   const strategy = route === "reflect:react"
     ? strategies[route] ?? reflectionDecorator(strategies.react!)
     : strategies[route];
@@ -355,7 +366,7 @@ async function executeStrategy(
     traceEventSchema.parse({
       ...event,
       sequence: state.trace.length + index,
-      node,
+      node: event.type === "handoff" ? event.node : node,
     })
   );
   return {

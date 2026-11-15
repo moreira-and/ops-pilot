@@ -2,11 +2,61 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ReasoningResult, ReasoningStrategy } from "./reasoning.js";
 import { createProductionGraph } from "./production-graph.js";
+import { productionRouteSchema } from "./production-graph.js";
 import { recordFallback, recordModelUsed } from "./model-usage.js";
 import { randomUUID } from "node:crypto";
 import type { RequestTraceCompletionInput } from "../services/request-trace-service.js";
 
 const routes = ["react", "plan-and-execute", "reflect:react"] as const;
+test("team is a valid production route", () => {
+  assert.equal(productionRouteSchema.parse("team"), "team");
+});
+
+test("routes team automatically and by override, preserving supervisor handoffs", async () => {
+  let routerCalls = 0;
+  let teamCalls = 0;
+  const graph = createProductionGraph({
+    route: async () => {
+      routerCalls += 1;
+      return { route: "team", reason: "Equipe necessária" };
+    },
+    strategies: {
+      team: {
+        name: "team",
+        async run() {
+          teamCalls += 1;
+          return {
+            answer: "Concluído",
+            trace: [{ sequence: 0, node: "supervisor", type: "handoff", from: "supervisor", to: "done", brief: "Concluído" }],
+            metrics: { llmCalls: 1, latencyMs: 1 },
+          };
+        },
+      },
+    },
+  });
+
+  for (const override of [undefined, "team"]) {
+    const result = await graph.run("incidente", {}, override);
+    const event = result.trace.find((item) => item.type === "handoff");
+    assert.equal(event?.node, "supervisor");
+  }
+  assert.equal(routerCalls, 1);
+  assert.equal(teamCalls, 2);
+});
+test("team cannot be reflected into multiple independent dispatch budgets", async () => {
+  let calls = 0;
+  const graph = createProductionGraph({
+    strategies: { team: {
+      name: "team",
+      async run() {
+        calls += 1;
+        return { answer: "done", trace: [], metrics: { llmCalls: 1, latencyMs: 1 } };
+      },
+    } },
+  });
+  await assert.rejects(graph.run("incident", {}, "team", true), /reflection.*team/i);
+  assert.equal(calls, 0);
+});
 type Route = (typeof routes)[number];
 
 function fakeStrategy(name: Route, calls: string[]): ReasoningStrategy {
